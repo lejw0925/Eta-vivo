@@ -4,6 +4,7 @@ import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService.NodeSna
 import io.github.mangi.eta.agent.device.RootShellDeviceController.ElementObservation
 import io.github.mangi.eta.agent.device.RootShellDeviceController.ElementSource
 import io.github.mangi.eta.agent.device.RootShellDeviceController.UiNode
+import io.github.mangi.eta.agent.model.AgentGuiGuidance
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -16,19 +17,36 @@ internal object AgentAfterActionSummary {
         build(before?.asElements(), after.asElements())
 
     fun build(before: ElementObservation?, after: ElementObservation): JSONObject {
-        val changed = before == null || signature(before.nodes) != signature(after.nodes)
+        val changed = when {
+            before == null -> null
+            before.packageName != after.packageName || before.windowId != after.windowId -> true
+            before.nodes.isEmpty() || after.nodes.isEmpty() -> null
+            // The lightweight after snapshot may contain fewer nodes than the previous observation.
+            else -> {
+                val limit = minOf(
+                    before.maxNodes, after.maxNodes,
+                    if (before.truncated) before.nodes.size else Int.MAX_VALUE,
+                    if (after.truncated) after.nodes.size else Int.MAX_VALUE,
+                )
+                signature(before.nodes.take(limit)) != signature(after.nodes.take(limit))
+            }
+        }
         return JSONObject()
             .put("observation_id", after.id)
             .put("package", after.packageName)
-            .put("screen_changed", changed)
+            .put("screen_changed", changed ?: JSONObject.NULL)
+            .put("comparison_scope", "sampled_ui_nodes_and_window")
             .put("package_changed", before != null && before.packageName != after.packageName)
             .put("window_changed", before != null && before.windowId != after.windowId)
             .put("ui_tree_truncated", after.truncated)
             .put("ui_nodes", JSONArray().also { array -> after.nodes.forEach { array.put(it.compactJson()) } })
             .put(
                 "note",
-                if (changed) "以上为动作后的新界面，可直接用该 observation_id 继续操作；需要更多节点或截图时再调用 observe_screen"
-                else "界面没有可见变化，动作可能未生效；请换目标或方式，不要原样重复",
+                when (changed) {
+                    true -> "应用、窗口或采样节点有变化，不代表业务已完成；核对后可用新的 observation_id 继续操作，需要更多节点或截图时再调用 observe_screen。"
+                    false -> AgentGuiGuidance.UNCHANGED_AFTER_ACTION
+                    null -> AgentGuiGuidance.UNKNOWN_AFTER_ACTION
+                },
             )
     }
 

@@ -132,12 +132,20 @@ public class DisplayProbeActivity extends Activity {
         });
         Button button = new Button(this);
         button.setText("Counter: 0");
+        final boolean slowSubmit = getIntent().getData() != null && "slow-submit".equals(getIntent().getData().getHost());
+        if (slowSubmit) button.setFocusable(false);
         if (this instanceof LandscapeProbeActivity) button.setBackgroundTintList(ColorStateList.valueOf(0xff23aa55));
         content.addView(button, new LinearLayout.LayoutParams(-1, 180));
         button.setOnClickListener(v -> {
             int taps = state.getInt("taps", 0) + 1;
             state.edit().putInt("taps", taps).apply();
-            button.setText("Counter: " + taps);
+            if (slowSubmit) {
+                state.edit().putBoolean("loading", true).apply();
+                button.postDelayed(() -> {
+                    state.edit().putBoolean("loading", false).putInt("completedSubmissions", taps).apply();
+                    button.setText("Counter: " + taps);
+                }, 5_000);
+            } else button.setText("Counter: " + taps);
         });
         button.setOnLongClickListener(v -> {
             state.edit().putInt("longPresses", state.getInt("longPresses", 0) + 1).apply();

@@ -14,12 +14,51 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class AgentAfterActionSummaryTest {
     @Test
-    fun unchangedScreenIsReportedSoTheModelDoesNotRepeatTheSameAction() {
+    fun unchangedSampleReportsEvidenceWithoutClaimingTheActionFailed() {
         val before = observation("o1", "app.a", listOf(node(0, "搜索")))
         val summary = AgentAfterActionSummary.build(before, observation("o2", "app.a", listOf(node(0, "搜索"))))
         assertFalse(summary.getBoolean("screen_changed"))
         assertFalse(summary.getBoolean("package_changed"))
         assertEquals("o2", summary.getString("observation_id"))
+        assertEquals("sampled_ui_nodes_and_window", summary.getString("comparison_scope"))
+        assertTrue(summary.getString("note").contains("不能据此判定动作失败或应用卡死"))
+        assertTrue(summary.getString("note").contains("提交结果不明确时只读核对"))
+    }
+
+    @Test
+    fun missingBaselineAndEmptyNodesReportUnknownRatherThanProgress() {
+        val after = observation("o2", "app", listOf(node(0, "提交")))
+        for (summary in listOf(
+            AgentAfterActionSummary.build(null, after),
+            AgentAfterActionSummary.build(observation("o1", "app", emptyList()), after),
+            AgentAfterActionSummary.build(after, observation("o3", "app", emptyList())),
+        )) {
+            assertTrue(summary.isNull("screen_changed"))
+            assertTrue(summary.getString("note").contains("不直接重放动作"))
+        }
+    }
+
+    @Test
+    fun smallerAfterSnapshotDoesNotInventProgress() {
+        val nodes = (0 until 60).map { node(it, "Row $it") }
+        val before = observation("o1", "app", nodes).copy(maxNodes = 60, truncated = true)
+        val after = observation("o2", "app", nodes.take(30)).copy(truncated = true)
+        assertFalse(AgentAfterActionSummary.build(before, after).getBoolean("screen_changed"))
+        // NodeSnapshot carries truncation without the requested node limit.
+        val smallerBefore = observation("o0", "app", nodes.take(1)).copy(truncated = true)
+        assertFalse(AgentAfterActionSummary.build(smallerBefore, after).getBoolean("screen_changed"))
+        val changed = after.copy(nodes = after.nodes.toMutableList().apply { this[29] = node(29, "Updated") })
+        assertTrue(AgentAfterActionSummary.build(before, changed).getBoolean("screen_changed"))
+        val removed = after.copy(nodes = nodes.take(20), truncated = false)
+        assertTrue(AgentAfterActionSummary.build(before, removed).getBoolean("screen_changed"))
+    }
+
+    @Test
+    fun packageOrWindowChangeIsObservedEvenWhenNodesAreIdentical() {
+        val before = observation("o1", "app", listOf(node(0, "提交")))
+        for (after in listOf(before.copy(id = "o2", packageName = "other"), before.copy(id = "o3", windowId = 2))) {
+            assertTrue(AgentAfterActionSummary.build(before, after).getBoolean("screen_changed"))
+        }
     }
 
     @Test

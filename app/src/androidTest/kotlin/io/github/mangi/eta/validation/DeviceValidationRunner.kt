@@ -132,6 +132,7 @@ class DeviceValidationRunner : Instrumentation() {
                 "gui_audit_baseline", "gui_audit" -> validateGuiAudit(mode == "gui_audit")
                 "gui_edge" -> validateGuiAfterAction()
                 "gui_no_tree" -> validateGuiWithoutTree()
+                "gui_slow_submit" -> validateSlowSubmit()
                 "swipe_path" -> validateSwipePath()
                 "floating" -> validateFloatingPreview()
                 "feature_ui" -> DeviceFeatureUiValidation(this, automation) { record -> checks += record }.run()
@@ -421,6 +422,33 @@ class DeviceValidationRunner : Instrumentation() {
             verify("empty tree does not claim unchanged screen", after.isNull("screen_changed"))
             verify("fallback remains on owned display", after.optInt("display_id") == VirtualScreenSession.state.value.display?.displayId)
             eventually("no-tree tap has one effect", { probe().optInt("taps") == 1 })
+            tools.retainVirtualScreenOnSuccess()
+        }
+    }
+
+    private fun validateSlowSubmit() {
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        tools("gui-slow-submit").use { tools ->
+            ok("create slow-submit display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch slow-submit fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", component).put("uri", "eta-validation://slow-submit")))
+            eventually("slow-submit fixture ready", { probe().optInt("buttonY") > 0 &&
+                probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId })
+            val observed = ok("observe before slow submission", call(tools, "observe_screen"))
+            verify("slow-submit has readable tree", observed.getJSONArray("ui_nodes").length() > 0)
+            val position = probe()
+            val result = ok("submit delivered once", call(tools, "tap", JSONObject()
+                .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY"))
+                .put("coordinate_space", "screen")))
+            val after = result.getJSONObject("after")
+            verify("pending submission reports unchanged UI evidence", !after.isNull("screen_changed") &&
+                !after.getBoolean("screen_changed"))
+            verify("unchanged result does not claim failure", after.getString("note").contains("不能据此判定动作失败"))
+            verify("pending submission is already accepted", probe().optInt("taps") == 1)
+            // Android Button themes can expose transformed, all-caps text to accessibility.
+            ok("bounded wait for submission result", call(tools, "wait_for_text",
+                JSONObject().put("text", "(?i)^Counter: 1$").put("match", "regex").put("timeout_ms", 10_000)))
+            verify("submission completed exactly once", probe().optInt("completedSubmissions") == 1 && probe().optInt("taps") == 1)
             tools.retainVirtualScreenOnSuccess()
         }
     }

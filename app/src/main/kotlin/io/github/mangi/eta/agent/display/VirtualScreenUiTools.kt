@@ -9,6 +9,7 @@ import io.github.mangi.eta.agent.device.ScrollDirection
 import io.github.mangi.eta.agent.device.ScrollAmount
 import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentGuiGuidance
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import io.github.mangi.eta.agent.tool.AgentAfterActionSummary
 import io.github.mangi.eta.data.datastore.SettingsDataStore
@@ -93,7 +94,7 @@ internal class VirtualScreenUiTools(
         val after = snapshot?.let { AgentAfterActionSummary.build(before, it) } ?: JSONObject()
             .put("observation_id", JSONObject.NULL).put("ui_nodes", JSONArray())
             .put("screen_changed", JSONObject.NULL)
-            .put("note", "本窗口没有有效 UI 树；根据附带的新截图核对效果，勿原样重复。需要等待加载时再观察。")
+            .put("note", AgentGuiGuidance.UNKNOWN_AFTER_ACTION)
         for (key in listOf("display_id", "screen", "focus", "accessibility", "screenshot", "execution_scope", "coordinate_contract")) {
             if (observed.has(key)) after.put(key, observed.get(key))
         }
