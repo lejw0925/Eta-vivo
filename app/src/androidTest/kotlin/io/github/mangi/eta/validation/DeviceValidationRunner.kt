@@ -12,6 +12,7 @@ import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.hardware.display.DisplayManager
@@ -33,6 +34,7 @@ import io.github.mangi.eta.agent.display.VirtualScreenAppConflictDialog
 import io.github.mangi.eta.agent.display.VirtualScreenSession
 import io.github.mangi.eta.agent.display.VirtualScreenViewerActivity
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.tool.AgentLocalTools
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.core.AgentLogger
@@ -72,6 +74,11 @@ class DeviceValidationRunner : Instrumentation() {
                 virtualScreenAutoRestartApps = backup.getBoolean("auto_restart"),
                 virtualScreenOffEnabled = backup.optBoolean("screen_off", it.virtualScreenOffEnabled),
                 virtualScreenIdleTimeoutMinutes = backup.getInt("idle_timeout"),
+                virtualScreenFloatingPreviewEnabled = backup.optBoolean("floating", it.virtualScreenFloatingPreviewEnabled),
+                defaultAssistantSystemPrompt = backup.optString("default_prompt", it.defaultAssistantSystemPrompt),
+                memoryEnabled = backup.optBoolean("memory", it.memoryEnabled),
+                autoMemoryEnabled = backup.optBoolean("auto_memory", it.autoMemoryEnabled),
+                autoSkillsEnabled = backup.optBoolean("auto_skills", it.autoSkillsEnabled),
             ) } }
             settingsBackup.delete()
         }
@@ -90,6 +97,11 @@ class DeviceValidationRunner : Instrumentation() {
             .put("fallback", original.virtualScreenFallbackEnabled)
             .put("auto_restart", original.virtualScreenAutoRestartApps)
             .put("screen_off", original.virtualScreenOffEnabled)
+            .put("floating", original.virtualScreenFloatingPreviewEnabled)
+            .put("default_prompt", original.defaultAssistantSystemPrompt)
+            .put("memory", original.memoryEnabled)
+            .put("auto_memory", original.autoMemoryEnabled)
+            .put("auto_skills", original.autoSkillsEnabled)
             .put("idle_timeout", original.virtualScreenIdleTimeoutMinutes).toString())
         val output = Bundle()
         var resultCode = Activity.RESULT_OK
@@ -101,7 +113,8 @@ class DeviceValidationRunner : Instrumentation() {
                 flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             }
             automation.adoptShellPermissionIdentity("android.permission.QUERY_ALL_PACKAGES")
-            if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery")) connectEnabledAccessibilityService()
+            if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery", "stop_resume", "stop_resume_baseline",
+                "floating", "feature_ui", "interjection")) connectEnabledAccessibilityService()
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true,
                 virtualScreenFallbackEnabled = false, virtualScreenAutoRestartApps = false,
                 virtualScreenOffEnabled = mode in setOf("recovery", "landscape", "frames", "frame_recovery") || original.virtualScreenOffEnabled,
@@ -112,6 +125,13 @@ class DeviceValidationRunner : Instrumentation() {
                 "recovery", "frame_recovery" -> validateUiRecovery()
                 "landscape" -> validateLandscape()
                 "frames" -> validateFrameCapture()
+                "stop_resume", "stop_resume_baseline" -> validateStopResume(mode == "stop_resume")
+                "gui_audit_baseline", "gui_audit" -> validateGuiAudit(mode == "gui_audit")
+                "gui_edge" -> validateGuiAfterAction()
+                "gui_no_tree" -> validateGuiWithoutTree()
+                "floating" -> validateFloatingPreview()
+                "feature_ui" -> DeviceFeatureUiValidation(this, automation) { record -> checks += record }.run()
+                "interjection" -> DeviceInterjectionValidation(targetContext) { record -> checks += record }.run()
                 "tree" -> DeviceUiTreeValidation(this, automation) { record ->
                     checks += record
                     sendStatus(0, Bundle().apply { putString("stream", record + "\n") })
@@ -148,8 +168,172 @@ class DeviceValidationRunner : Instrumentation() {
             deviceDirectToolsEnabled = { true }, browserToolsEnabled = { true },
             fallbackApproval = { _, _ -> approval }, virtualScreenOwner = "device-validation")
 
-    private fun call(tools: AgentLocalTools, name: String, args: JSONObject = JSONObject()): JSONObject =
-        JSONObject(tools.execute(AgentModelClient.ToolCall("validation", name, args.toString())).content)
+    private fun validateStopResume(expectRetained: Boolean) {
+        val controller = AgentRunController()
+        val first = AgentLocalTools(targetContext, NoOpLogger, browserRunId = "retention-first",
+            virtualScreenOwner = "device-validation", deviceDirectToolsEnabled = { true },
+            isRunCancelled = { controller.isCancelled },
+            fallbackApproval = { _, _ -> MainScreenFallbackDecision.RESTART_VIRTUAL })
+        controller.register(first::close)
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        ok("create cancellation fixture", call(first, "virtual_screen", JSONObject().put("action", "create")))
+        ok("launch cancellation fixture", call(first, "virtual_screen", JSONObject().put("action", "launch").put("component", component)))
+        ok("observe before cancellation", call(first, "observe_screen", JSONObject().put("include_screenshot", true)))
+        val sessionId = VirtualScreenSession.state.value.display!!.sessionId
+        val startedAt = SystemClock.elapsedRealtime()
+        controller.cancel()
+        val elapsed = SystemClock.elapsedRealtime() - startedAt
+        verify("stop retains display=$expectRetained", VirtualScreenSession.isActive() == expectRetained)
+        if (!expectRetained) {
+            sendStatus(0, Bundle().apply { putString("stream", "BASELINE: stop destroyed virtual display; cancellation_ms=$elapsed\n") })
+            return
+        }
+        verify("cancellation returns within 500 ms", elapsed < 500)
+        verify("stop keeps same session", VirtualScreenSession.state.value.display?.sessionId == sessionId)
+        tools("retention-resume").use { resumed ->
+            val stale = call(resumed, "tap", JSONObject().put("x", 1).put("y", 1).put("coordinate_space", "screen"))
+            verify("resumed run requires fresh observation", !stale.optBoolean("ok") && stale.optString("code") == "NO_OBSERVATION")
+            val observed = ok("resume observes retained app", call(resumed, "observe_screen", JSONObject().put("include_screenshot", true)))
+            verify("resume preserves display and application", VirtualScreenSession.state.value.display?.sessionId == sessionId &&
+                observed.getJSONObject("focus").optString("package") == context.packageName)
+            ok("resume controls same virtual display", call(resumed, "tap", JSONObject().put("x", 1).put("y", 1).put("coordinate_space", "screen")))
+            resumed.retainVirtualScreenOnSuccess()
+        }
+        tools("retention-failure").use { failed ->
+            ok("failure run observes preserved app", call(failed, "observe_screen"))
+            // Model/transport failure closes tools without retainVirtualScreenOnSuccess().
+        }
+        verify("failed run retains same session", VirtualScreenSession.state.value.display?.sessionId == sessionId)
+        verify("failed run is shown as failed", VirtualScreenSession.state.value.taskPhase.name == "FAILED")
+    }
+
+    private fun validateGuiAudit(optimized: Boolean) {
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        tools("gui-audit").use { tools ->
+            ok("create audit display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch audit fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch").put("component", component)))
+            eventually("audit fixture ready", { probe().optInt("buttonY") > 0 &&
+                probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId })
+            ok("initial audit observation", call(tools, "observe_screen"))
+            var toolCalls = 0
+            var images = 0
+            val durations = mutableListOf<Long>()
+            repeat(6) { index ->
+                val position = probe()
+                val start = SystemClock.elapsedRealtime()
+                val tap = tools.execute(AgentModelClient.ToolCall("audit-$index", "tap", JSONObject()
+                    .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY"))
+                    .put("coordinate_space", "screen").toString()))
+                toolCalls++
+                images += tap.images.size
+                val result = ok("audit tap ${index + 1}", JSONObject(tap.content))
+                if (optimized) {
+                    val after = result.getJSONObject("after")
+                    verify("audit action supplies fresh scoped observation ${index + 1}",
+                        after.optInt("display_id") == VirtualScreenSession.state.value.display?.displayId &&
+                            (after.getJSONArray("ui_nodes").length() > 0 || tap.images.isNotEmpty()))
+                    if (after.getJSONArray("ui_nodes").length() > 0) verify("audit observation contains confirmed effect ${index + 1}",
+                        (0 until after.getJSONArray("ui_nodes").length()).any { node ->
+                            after.getJSONArray("ui_nodes").getJSONObject(node).optString("text")
+                                .equals("Counter: ${index + 1}", ignoreCase = true)
+                        })
+                } else {
+                    verify("baseline has no automatic virtual observation", !result.has("after"))
+                    ok("baseline wait ${index + 1}", call(tools, "wait", JSONObject().put("duration_ms", 200)))
+                    toolCalls++
+                    val observed = tools.execute(AgentModelClient.ToolCall("audit-observe-$index", "observe_screen", "{}"))
+                    toolCalls++
+                    images += observed.images.size
+                    ok("baseline observation ${index + 1}", JSONObject(observed.content))
+                }
+                durations += SystemClock.elapsedRealtime() - start
+                eventually("audit effect confirmed ${index + 1}", { probe().optInt("taps") == index + 1 })
+            }
+            val metrics = JSONObject().put("mode", mode).put("steps", 6).put("tool_calls", toolCalls)
+                .put("attached_images", images).put("tool_elapsed_ms", durations.sum())
+                .put("step_elapsed_ms", org.json.JSONArray(durations))
+                .put("confirmed_actions", probe().optInt("taps"))
+            val directory = File(targetContext.cacheDir, "validation").apply { mkdirs() }
+            File(directory, "$mode.json").writeText(metrics.toString(2))
+            sendStatus(0, Bundle().apply { putString("stream", "GUI_AUDIT: $metrics\n") })
+            tools.retainVirtualScreenOnSuccess()
+        }
+    }
+
+    private fun validateGuiAfterAction() {
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        tools("gui-edge").use { tools ->
+            ok("create edge display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch edge fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", component).put("uri", "eta-validation://audit")))
+            eventually("edge fixture ready", { probe().optInt("toggleY") > 0 &&
+                probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId })
+            val observation = ok("edge observation", call(tools, "observe_screen"))
+            var after = observation
+            repeat(2) { index ->
+                val position = probe()
+                val tap = ok("toggle action ${index + 1}", call(tools, "tap", JSONObject()
+                    .put("x", position.getInt("toggleX")).put("y", position.getInt("toggleY"))
+                    .put("coordinate_space", "screen")))
+                after = tap.getJSONObject("after")
+                eventually("toggle effect ${index + 1}", { probe().optBoolean("toggle") == (index == 0) })
+                if (after.getJSONArray("ui_nodes").length() > 0) {
+                    val nodes = after.getJSONArray("ui_nodes")
+                    val toggle = (0 until nodes.length()).map(nodes::getJSONObject).first { it.optString("text") == "Audit toggle" }
+                    verify("checked-only change is observed ${index + 1} (changed=${after.opt("screen_changed")},checked=${toggle.opt("checked")})",
+                        after.optBoolean("screen_changed") && toggle.getBoolean("checked") == (index == 0))
+                }
+            }
+            val position = probe()
+            val missed = ok("missed tap is delivered", call(tools, "tap", JSONObject()
+                .put("x", position.getInt("titleX")).put("y", position.getInt("titleY"))
+                .put("coordinate_space", "screen")))
+            after = missed.getJSONObject("after")
+            if (after.getJSONArray("ui_nodes").length() > 0) verify("missed tap is not reported as progress", !after.getBoolean("screen_changed"))
+            val focused = ok("focus editor with after observation", call(tools, "tap", JSONObject()
+                .put("x", position.getInt("editorX")).put("y", position.getInt("editorY"))
+                .put("coordinate_space", "screen")))
+            after = focused.getJSONObject("after")
+            val text = "Eta 中文 😀"
+            val input = ok("unified Unicode replacement", call(tools, "type_text", JSONObject().put("text", text)))
+            verify("text action carries observation", input.has("after"))
+            eventually("Unicode replacement is exact", { probe().optString("text") == text })
+            ok("unified append", call(tools, "type_text", JSONObject().put("text", " test").put("mode", "append")))
+            eventually("append preserves existing text", { probe().optString("text") == "$text test" })
+            tools.retainVirtualScreenOnSuccess()
+        }
+    }
+
+    private fun validateGuiWithoutTree() {
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        tools("gui-no-tree").use { tools ->
+            ok("create no-tree display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch no-tree fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", component).put("uri", "eta-validation://empty-tree")))
+            eventually("no-tree fixture ready", { probe().optInt("buttonY") > 0 &&
+                probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId })
+            val observed = ok("no-tree observation", call(tools, "observe_screen"))
+            verify("fixture exposes no usable nodes", observed.getJSONArray("ui_nodes").length() == 0)
+            val position = probe()
+            val result = tools.execute(AgentModelClient.ToolCall("no-tree-tap", "tap", JSONObject()
+                .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY"))
+                .put("coordinate_space", "screen").toString()))
+            val after = ok("no-tree tap", JSONObject(result.content)).getJSONObject("after")
+            verify("automatic fallback contains one image", result.images.size == 1 &&
+                after.getJSONObject("screenshot").optBoolean("attached"))
+            verify("empty tree does not claim unchanged screen", after.isNull("screen_changed"))
+            verify("fallback remains on owned display", after.optInt("display_id") == VirtualScreenSession.state.value.display?.displayId)
+            eventually("no-tree tap has one effect", { probe().optInt("taps") == 1 })
+            tools.retainVirtualScreenOnSuccess()
+        }
+    }
+
+    private fun call(tools: AgentLocalTools, name: String, args: JSONObject = JSONObject()): JSONObject {
+        if (name in setOf("tap", "tap_area", "long_press", "swipe") && !args.has("coordinate_space")) {
+            args.put("coordinate_space", "screen")
+        }
+        return JSONObject(tools.execute(AgentModelClient.ToolCall("validation", name, args.toString())).content)
+    }
 
     private fun ok(name: String, result: JSONObject): JSONObject {
         verify(name + " (" + result.optString("code") + ":" + result.optString("error_type") + ":" + result.optString("error_stage") +
@@ -292,7 +476,7 @@ class DeviceValidationRunner : Instrumentation() {
             }
             val position = probe()
             val paused = tools.execute(AgentModelClient.ToolCall("pause", "tap", JSONObject()
-                .put("x", position.getInt("titleX")).put("y", position.getInt("titleY")).toString()))
+                .put("x", position.getInt("titleX")).put("y", position.getInt("titleY")).put("coordinate_space", "screen").toString()))
             verify("fourth missed tap pauses", paused.stop?.code == "UI_NO_PROGRESS")
             verify("missed tap is not business progress", probe().optInt("taps") == 5)
         }
@@ -324,12 +508,12 @@ class DeviceValidationRunner : Instrumentation() {
             ok("observe freeze fixture", call(tools, "observe_screen"))
             val position = probe()
             val freeze = tools.execute(AgentModelClient.ToolCall("freeze", "tap", JSONObject()
-                .put("x", position.getInt("freezeX")).put("y", position.getInt("freezeY")).toString()))
+                .put("x", position.getInt("freezeX")).put("y", position.getInt("freezeY")).put("coordinate_space", "screen").toString()))
             val result = if (freeze.stop != null) freeze else {
                 ok("freeze input dispatch completes", JSONObject(freeze.content))
                 eventually("fixture main thread is blocked", { probe().optBoolean("blocked") })
                 tools.execute(AgentModelClient.ToolCall("blocked-input", "tap", JSONObject()
-                    .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY")).toString()))
+                    .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY")).put("coordinate_space", "screen").toString()))
             }
             verify("blocked UI pauses from system evidence or input timeout (${result.stop?.code ?: JSONObject(result.content).optString("code")})", result.stop?.code in
                 setOf("UI_APP_UNRESPONSIVE", "UI_INPUT_TIMEOUT"))
@@ -358,7 +542,7 @@ class DeviceValidationRunner : Instrumentation() {
                 ok("observe missed recovery tap ${index + 1}", call(tools, "observe_screen"))
             }
             val paused = tools.execute(AgentModelClient.ToolCall("pause", "tap", JSONObject()
-                .put("x", position.getInt("titleX")).put("y", position.getInt("titleY")).toString()))
+                .put("x", position.getInt("titleX")).put("y", position.getInt("titleY")).put("coordinate_space", "screen").toString()))
             verify("recovery fixture pauses after missed taps", paused.stop?.code == "UI_NO_PROGRESS")
             if (screenOffValidation) lockPrimaryForRecovery("missed taps")
             val previousFrameId = JSONObject(VirtualScreenSession.observeForViewer(targetContext).content).getLong("frameId")
@@ -392,12 +576,12 @@ class DeviceValidationRunner : Instrumentation() {
             ok("observe blocking recovery fixture", call(tools, "observe_screen"))
             val position = probe()
             val freeze = tools.execute(AgentModelClient.ToolCall("freeze", "tap", JSONObject()
-                .put("x", position.getInt("freezeX")).put("y", position.getInt("freezeY")).toString()))
+                .put("x", position.getInt("freezeX")).put("y", position.getInt("freezeY")).put("coordinate_space", "screen").toString()))
             val paused = if (freeze.stop != null) freeze else {
                 eventually("recovery fixture main thread is blocked", { probe().optBoolean("blocked") })
                 if (screenOffValidation) lockPrimaryForRecovery("blocked application")
                 tools.execute(AgentModelClient.ToolCall("blocked-tap", "tap", JSONObject()
-                    .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY")).toString()))
+                    .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY")).put("coordinate_space", "screen").toString()))
             }
             verify("blocked application produces trusted pause", paused.stop?.code in setOf("UI_INPUT_TIMEOUT", "UI_APP_UNRESPONSIVE"))
             val previousFrameId = JSONObject(VirtualScreenSession.observeForViewer(targetContext).content).getLong("frameId")
@@ -416,6 +600,125 @@ class DeviceValidationRunner : Instrumentation() {
             tools.retainVirtualScreenOnSuccess()
         }
         shell("am force-stop io.github.mangi.eta.test")
+    }
+
+    private fun validateFloatingPreview() {
+        verify("floating overlay permission already granted", android.provider.Settings.canDrawOverlays(targetContext))
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        fun previewWindow(): android.view.View? {
+            val serviceField = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }
+            val service = serviceField.get(null) ?: return null
+            val host = service.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }.get(service) ?: return null
+            val rootField = host.javaClass.getDeclaredField("root").apply { isAccessible = true }
+            val root = java.util.concurrent.atomic.AtomicReference<android.view.View?>()
+            runOnMainSync { root.set((rootField.get(host) as? android.view.View)?.takeIf { it.isAttachedToWindow && it.isShown }) }
+            return root.get()
+        }
+        fun bounds(): android.graphics.Rect {
+            val rect = android.graphics.Rect()
+            val view = checkNotNull(previewWindow())
+            runOnMainSync {
+                val location = IntArray(2).also(view::getLocationOnScreen)
+                rect.set(location[0], location[1], location[0] + view.width, location[1] + view.height)
+            }
+            return rect
+        }
+        fun captureState() = JSONObject(VirtualScreenSession.execute(targetContext, "device-validation",
+            JSONObject().put("action", "probe"), manual = true).content).getJSONObject("capture")
+        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
+        tools("floating-preview-run").use { tools ->
+            ok("create floating fixture display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch changing floating fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", component).put("uri", "eta-validation://frames")))
+            val viewer = VirtualScreenSession.state.value
+            checks += "Floating state: controlling=${viewer.isAgentControlling}, phase=${viewer.taskPhase}, full=${viewer.fullViewerVisible}, run=${viewer.activeRunId != null}"
+            val serviceField = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }
+            val service = serviceField.get(null)
+            checks += "Floating service: present=${service != null}"
+            if (service != null) {
+                val hostField = service.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }
+                val host = hostField.get(service)
+                checks += "Floating host: present=${host != null}"
+            }
+            eventually("floating preview visible on primary display", { previewWindow() != null })
+            eventually("floating preview activates capture", { captureState().optBoolean("viewer_visible") })
+            val before = captureState().getLong("encoded_frames")
+            val start = SystemClock.elapsedRealtime()
+            SystemClock.sleep(1_000)
+            val count = captureState().getLong("encoded_frames") - before
+            verify("floating preview supplies live frames", count >= 3)
+            verify("floating preview stays within ten fps", count <= (SystemClock.elapsedRealtime() - start) / 100 + 1)
+            val executionService = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java
+                .getDeclaredField("instance").apply { isAccessible = true }.get(null)!!
+            val previewHost = executionService.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }.get(executionService)!!
+            fun previewScreenshot(name: String) {
+                // Only the synthetic fixture is captured. Production previews retain FLAG_SECURE.
+                val view = checkNotNull(previewWindow())
+                val params = previewHost.javaClass.getDeclaredField("params").apply { isAccessible = true }
+                    .get(previewHost) as WindowManager.LayoutParams
+                val manager = previewHost.javaClass.getDeclaredField("manager").apply { isAccessible = true }
+                    .get(previewHost) as WindowManager
+                val flags = params.flags
+                try {
+                    runOnMainSync {
+                        params.flags = flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
+                        manager.updateViewLayout(view, params)
+                    }
+                    SystemClock.sleep(200)
+                    val area = bounds()
+                    val image = checkNotNull(automation.takeScreenshot())
+                    try {
+                        val crop = Bitmap.createBitmap(image, area.left, area.top, area.width(), area.height())
+                        try {
+                            val directory = File(targetContext.getExternalFilesDir(null), "validation").apply { mkdirs() }
+                            File(directory, name).outputStream().use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        } finally { crop.recycle() }
+                    } finally { image.recycle() }
+                } finally {
+                    runOnMainSync { params.flags = flags; manager.updateViewLayout(view, params) }
+                }
+            }
+            verify("floating preview decodes and displays frames", previewHost.javaClass.getDeclaredField("lastFrame")
+                .apply { isAccessible = true }.getLong(previewHost) > 0)
+            val fullBounds = bounds()
+            verify("floating preview is a portrait rectangle", fullBounds.height() > fullBounds.width())
+            previewScreenshot("floating-preview.png")
+            verify("floating preview can be dragged to left edge", dragPrimary(fullBounds.centerX().toFloat(), 16f,
+                fullBounds.centerY().toFloat()))
+            eventually("edge folds floating preview", {
+                previewWindow() != null && bounds().width() < fullBounds.width() / 2
+            })
+            eventually("folded preview releases capture", { !captureState().optBoolean("viewer_visible") })
+            previewScreenshot("floating-preview-folded.png")
+            val foldedFrames = captureState().getLong("encoded_frames")
+            SystemClock.sleep(500)
+            verify("folded preview does not encode frames", captureState().getLong("encoded_frames") == foldedFrames)
+            val foldedBounds = bounds()
+            verify("folded bubble opens virtual screen", tapPrimary(foldedBounds.centerX().toFloat(), foldedBounds.centerY().toFloat()))
+            eventually("tap opens full virtual viewer", { VirtualScreenSession.state.value.fullViewerVisible })
+            eventually("full viewer hides floating window", { previewWindow() == null })
+            eventually("full viewer keeps its own capture lease", { captureState().optBoolean("viewer_visible") })
+            verify("viewer back action succeeds", automation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+            eventually("floating preview returns after full viewer", { !VirtualScreenSession.state.value.fullViewerVisible && previewWindow() != null })
+            val bubble = bounds()
+            val primaryWidth = targetContext.getSystemService(DisplayManager::class.java).getDisplay(0)
+                .let { display -> android.graphics.Point().also(display::getRealSize).x }
+            verify("dragging bubble away from edge succeeds", dragPrimary(bubble.centerX().toFloat(), primaryWidth / 2f, bubble.centerY().toFloat()))
+            eventually("dragging away expands preview", { bounds().width() >= fullBounds.width() })
+            eventually("expanded preview resumes capture", { captureState().optBoolean("viewer_visible") })
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = false) } }
+            eventually("disabling preference removes floating window", { previewWindow() == null })
+            eventually("disabled preview releases capture", { !captureState().optBoolean("viewer_visible") })
+            val hiddenFrames = captureState().getLong("encoded_frames")
+            SystemClock.sleep(400)
+            verify("disabled preview stays idle", captureState().getLong("encoded_frames") == hiddenFrames)
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
+            eventually("preference can restore preview in same task", { previewWindow() != null })
+            tools.retainVirtualScreenOnSuccess()
+        }
+        eventually("ending task hides floating preview", { previewWindow() == null })
+        verify("task end still retains virtual display", VirtualScreenSession.isActive())
+        eventually("retained idle display stops preview capture", { !captureState().optBoolean("viewer_visible") })
     }
 
     private fun validateFrameCapture() {
@@ -738,7 +1041,7 @@ class DeviceValidationRunner : Instrumentation() {
         val now = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
         val up = MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_UP, x, y, 0)
-        return try { automation.injectInputEvent(down, true) && automation.injectInputEvent(up, true) }
+        return try { injectPrimaryEvent(down) && injectPrimaryEvent(up) }
         finally { down.recycle(); up.recycle() }
     }
 
@@ -748,10 +1051,19 @@ class DeviceValidationRunner : Instrumentation() {
         for (step in 0..8) {
             val action = when (step) { 0 -> MotionEvent.ACTION_DOWN; 8 -> MotionEvent.ACTION_UP; else -> MotionEvent.ACTION_MOVE }
             val event = MotionEvent.obtain(start, SystemClock.uptimeMillis(), action, x1 + (x2 - x1) * step / 8f, y, 0)
-            try { accepted = automation.injectInputEvent(event, true) && accepted } finally { event.recycle() }
+            try { accepted = injectPrimaryEvent(event) && accepted } finally { event.recycle() }
             SystemClock.sleep(30)
         }
         return accepted
+    }
+
+    private fun injectPrimaryEvent(event: MotionEvent): Boolean {
+        // An unspecified display follows focus, which may currently belong to the virtual app.
+        event.source = android.view.InputDevice.SOURCE_TOUCHSCREEN
+        org.lsposed.hiddenapibypass.HiddenApiBypass.invoke(
+            android.view.InputEvent::class.java, event, "setDisplayId", Display.DEFAULT_DISPLAY,
+        )
+        return automation.injectInputEvent(event, true)
     }
 
     private fun validateSettingsAndApproval(viewer: VirtualScreenViewerActivity) {

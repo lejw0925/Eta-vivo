@@ -117,6 +117,26 @@ class AgentLocalToolsPermissionTest {
     }
 
     @Test
+    fun proposalStagingCannotBypassMemoryRevocationOrRoleplayWriteBoundary() {
+        val staged = java.util.concurrent.atomic.AtomicInteger()
+        val writer: (String, JSONObject) -> JSONObject = { _, _ ->
+            staged.incrementAndGet()
+            JSONObject().put("ok", true)
+        }
+        tools(memoryEnabled = { false }, learningProposalWriter = writer).use { local ->
+            assertEquals("MEMORY_DISABLED", JSONObject(local.execute(
+                AgentModelClient.ToolCall("write", "memory_write", "{}")).content).getString("code"))
+        }
+        tools(memoryEnabled = { true }, memoryWritable = false, learningProposalWriter = writer).use { local ->
+            assertEquals("REAL_MEMORY_READ_ONLY", JSONObject(local.execute(
+                AgentModelClient.ToolCall("write", "memory_write", "{}")).content).getString("code"))
+            assertEquals("SKILL_READ_ONLY", JSONObject(local.execute(
+                AgentModelClient.ToolCall("skill", "skills_manage", "{}")).content).getString("code"))
+        }
+        assertEquals(0, staged.get())
+    }
+
+    @Test
     fun roleplayCannotWriteRealMemoryEvenWithAStaleToolDeclaration() {
         val tools = tools(memoryEnabled = { true }, memoryWritable = false)
         try {
@@ -189,6 +209,37 @@ class AgentLocalToolsPermissionTest {
         )
 
         assertEquals("INVALID_ARGUMENT", JSONObject(result.content).getString("code"))
+        tools.close()
+    }
+
+    @Test
+    fun coordinateToolsRequireExplicitCoordinateSpace() {
+        val tools = tools()
+        listOf(
+            "{\"x\":100,\"y\":200}",
+            "{\"x\":100,\"y\":200,\"coordinate_space\":\"pixel\"}",
+            "{\"x\":1000,\"y\":200,\"coordinate_space\":\"normalized\"}",
+        ).forEach { arguments ->
+            val result = tools.execute(AgentModelClient.ToolCall(id = "call-1", name = "tap", argumentsJson = arguments))
+            assertEquals(arguments, "INVALID_ARGUMENT", JSONObject(result.content).getString("code"))
+        }
+        tools.close()
+    }
+
+    @Test
+    fun typeTextRejectsInvalidModesBeforeTouchingTheScreen() {
+        val tools = tools()
+        listOf(
+            "{\"text\":\"hi\",\"mode\":\"paste\"}",
+            "{\"text\":\"\",\"mode\":\"append\"}",
+            "{\"text\":\"hi\",\"mode\":\"append\",\"index\":1}",
+        ).forEach { arguments ->
+            val result = tools.execute(AgentModelClient.ToolCall(id = "call-1", name = "type_text", argumentsJson = arguments))
+            assertEquals(arguments, "INVALID_ARGUMENT", JSONObject(result.content).getString("code"))
+        }
+        // 无障碍未连接时 replace 明确失败，不会退回到盲发按键。
+        val replace = tools.execute(AgentModelClient.ToolCall(id = "call-2", name = "type_text", argumentsJson = "{\"text\":\"hi\"}"))
+        assertEquals("ACCESSIBILITY_UNAVAILABLE", JSONObject(replace.content).getString("code"))
         tools.close()
     }
 
@@ -281,6 +332,7 @@ class AgentLocalToolsPermissionTest {
         browserEnabled: () -> Boolean = { false },
         memoryEnabled: () -> Boolean = { false },
         memoryWritable: Boolean = true,
+        learningProposalWriter: ((String, JSONObject) -> JSONObject)? = null,
         rootAvailable: () -> Boolean = { false },
         sensitiveReadEnabled: () -> Boolean = { false },
         screenObservationProvider: (
@@ -298,6 +350,7 @@ class AgentLocalToolsPermissionTest {
             browserToolsEnabled = browserEnabled,
             memoryToolsEnabled = memoryEnabled,
             memoryWritable = memoryWritable,
+            learningProposalWriter = learningProposalWriter,
             rootAvailable = rootAvailable,
             deviceSensitiveReadToolsEnabled = sensitiveReadEnabled,
             screenObservationProvider = screenObservationProvider,

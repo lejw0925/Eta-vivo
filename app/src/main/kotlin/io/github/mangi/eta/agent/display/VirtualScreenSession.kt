@@ -121,11 +121,19 @@ internal object VirtualScreenSession {
     }
 
     fun releaseRun(owner: String, runId: String, retain: Boolean, cancelled: Boolean = false,
-        paused: Boolean = false) = synchronized(lock) {
-        val current = session.get()?.takeIf { it.owner == owner } ?: return@synchronized
-        if (!current.runLease.release(runId, retain)) return@synchronized
-        viewerState.update { if (it.display?.sessionId == current.id) it.finishRun(runId, retain, cancelled, paused) else it }
-        if (!retain) current.close() else updateIdleTimeout()
+        paused: Boolean = false, completed: Boolean = retain) {
+        // Cancellation may arrive while a root input is awaiting acknowledgement under lock.
+        // Releasing a run must not wait for that input or destroy its independent display process.
+        val current = session.get()?.takeIf { it.owner == owner } ?: return
+        if (!current.runLease.release(runId, retain)) return
+        viewerState.update { if (it.display?.sessionId == current.id) it.finishRun(runId, completed, cancelled, paused) else it }
+        if (!retain) current.close() else previewUpdates.execute {
+            synchronized(lock) {
+                if (session.get() === current && !current.closed.get() && viewerState.value.activeRunId == null) {
+                    updateIdleTimeout()
+                }
+            }
+        }
     }
 
     fun updateIdleTimeout() = synchronized(lock) {
@@ -137,8 +145,13 @@ internal object VirtualScreenSession {
     }
 
     /** Only atomic bookkeeping happens on the main thread; root IPC stays serialized. */
-    fun setViewerVisible(viewerId: String, visible: Boolean) {
-        if (visible) viewerVisibility.show(viewerId) else if (!viewerVisibility.hide(viewerId)) return
+    fun setViewerVisible(viewerId: String, visible: Boolean, preview: Boolean = false) {
+        if (preview) {
+            if (visible) viewerVisibility.showPreview(viewerId) else if (!viewerVisibility.hidePreview(viewerId)) return
+        } else {
+            if (visible) viewerVisibility.show(viewerId) else if (!viewerVisibility.hide(viewerId)) return
+            viewerState.update { it.copy(fullViewerVisible = viewerVisibility.fullViewerVisible) }
+        }
         previewUpdates.execute {
             synchronized(lock) {
                 val current = session.get() ?: return@synchronized
@@ -239,6 +252,7 @@ internal object VirtualScreenSession {
                 }
                 current.displayId = response.getInt("displayId")
                 viewerState.value = VirtualScreenViewerState(
+                    fullViewerVisible = viewerVisibility.fullViewerVisible,
                     display = VirtualDisplayInfo(current.id, owner, current.displayId, width, height, density = density),
                     lastAction = "create",
                     taskPhase = if (runId == null) VirtualScreenTaskPhase.IDLE else VirtualScreenTaskPhase.RUNNING,
@@ -406,7 +420,7 @@ internal object VirtualScreenSession {
                 val bounds = node.bounds
                 val value = JSONArray(listOf(stableText(node.text), stableText(node.desc), node.className, node.viewId,
                     bounds.left, bounds.top, bounds.right, bounds.bottom, node.enabled, node.focused,
-                    node.editable, node.clickable, node.scrollable)).toString()
+                    node.editable, node.clickable, node.scrollable, node.checked, node.selected, node.hint)).toString()
                 digest.update(value.toByteArray(Charsets.UTF_8))
             }
             digest.digest().joinToString("") { "%02x".format(it) }

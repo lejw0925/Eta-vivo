@@ -25,8 +25,26 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33, 36])
+// Wire/image transport does not need EtaApp's background database/automation workers.
+@Config(sdk = [33, 36], application = android.app.Application::class)
 class AgentRuntimeWireTest {
+    @Test
+    fun interjectionPayloadIsBoundToOneRunAndRejectsInvalidText() {
+        val bundle = AgentRuntimeWire.steerBundle("run", "改成第二种方案")
+        assertEquals("run", AgentRuntimeWire.runIdFromBundle(bundle))
+        assertEquals("改成第二种方案", bundle.getString("supplement_text"))
+        assertThrows(IllegalArgumentException::class.java) { AgentRuntimeWire.steerBundle("", "text") }
+        assertThrows(IllegalArgumentException::class.java) { AgentRuntimeWire.steerBundle("run", " ") }
+        assertThrows(IllegalArgumentException::class.java) { AgentRuntimeWire.steerBundle("run", "x".repeat(8_001)) }
+    }
+
+    @Test
+    fun modelInterjectionSurvivesIpcAndArchiveReplay() {
+        val event = AgentEvent.ModelRequestInterrupted(3)
+        assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+    }
+
     @Test
     fun uiPauseClassificationSurvivesCompleteAndLegacyBundle() {
         val result = AgentRuntimeWire.RunResult("ui-pause", false, "", "已暂停", errorCode = "UI_EXECUTION_PAUSED")

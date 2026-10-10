@@ -32,6 +32,14 @@ import kotlinx.serialization.json.Json
  */
 internal object AgentRuntimeWire {
     const val MSG_READ_CONTEXT_RESULT = 15
+    const val MSG_STEER_RUN = 16
+    const val MSG_STEER_RESPONSE = 17
+
+    fun steerBundle(runId: String, text: String): Bundle {
+        require(runId.isNotBlank() && runId.length <= 256)
+        require(text.isNotBlank() && text.length <= 8_000 && '\u0000' !in text)
+        return ackBundle(runId).apply { putString("supplement_text", text) }
+    }
     const val OP_CHAT = "chat"
     const val OP_COMPACT = "compact"
     const val OP_REWRITE_REPLY = "rewrite_reply"
@@ -672,6 +680,11 @@ internal object AgentRuntimeWire {
                 putString("reason_code", event.reasonCode)
             }
 
+            is AgentEvent.ModelRequestInterrupted -> {
+                putString(KEY_TYPE, "model_request_interrupted")
+                putInt("round", event.round)
+            }
+
             is AgentEvent.ProviderRequestStarted -> {
                 putString(KEY_TYPE, "provider_request_started")
                 putInt("round", event.round)
@@ -826,11 +839,14 @@ internal object AgentRuntimeWire {
             httpCode = bundle.getInt("http_code"),
         )
 
+        "model_request_interrupted" -> AgentEvent.ModelRequestInterrupted(bundle.getInt("round"))
+
         "assistant_block_start" -> AgentEvent.AssistantBlockStart(
             round = bundle.getInt("round"),
             kind = AgentEvent.AssistantBlockKind.valueOf(
                 bundle.getString("kind").orEmpty()
             ),
+
             index = bundle.getInt("index"),
             blockId = bundle.getString("block_id"),
             name = bundle.getString("name"),

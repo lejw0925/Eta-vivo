@@ -27,8 +27,9 @@ import androidx.room.migration.Migration
         UserPersonaEntity::class,
         AgentTaskEntity::class,
         AgentTaskRunEntity::class,
+        LearningProposalEntity::class,
     ],
-    version = 25,
+    version = 27,
     exportSchema = false,
 )
 internal abstract class EtaDatabase : RoomDatabase() {
@@ -39,6 +40,7 @@ internal abstract class EtaDatabase : RoomDatabase() {
     abstract fun mcpServerDao(): McpServerDao
     abstract fun characterDao(): CharacterDao
     abstract fun agentTaskDao(): AgentTaskDao
+    abstract fun learningProposalDao(): LearningProposalDao
 
     companion object {
         @Volatile
@@ -71,6 +73,8 @@ internal abstract class EtaDatabase : RoomDatabase() {
                         MIGRATION_22_23,
                         MIGRATION_23_24,
                         MIGRATION_24_25,
+                        MIGRATION_25_26,
+                        MIGRATION_26_27,
                     )
                     .addCallback(object : Callback() {
                         override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) { createTextChunkCleanup(db) }
@@ -93,6 +97,16 @@ internal abstract class EtaDatabase : RoomDatabase() {
             listOf("runtime_results", "runtime_archive_runs").forEach { table ->
                 database.execSQL("ALTER TABLE $table ADD COLUMN error_code TEXT NOT NULL DEFAULT ''")
             }
+        }
+
+        internal val MIGRATION_26_27 = Migration(26, 27) { database ->
+            database.execSQL("CREATE TABLE IF NOT EXISTS learning_proposals (" +
+                "id TEXT NOT NULL PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,detailMarkdown TEXT NOT NULL," +
+                "argumentsJson TEXT NOT NULL,conversationId TEXT NOT NULL,runId TEXT NOT NULL,automatic INTEGER NOT NULL," +
+                "status TEXT NOT NULL,errorCode TEXT NOT NULL,createdAt INTEGER NOT NULL,updatedAt INTEGER NOT NULL," +
+                "read INTEGER NOT NULL,applyOwner TEXT NOT NULL)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS index_learning_proposals_status ON learning_proposals(status)")
+            database.execSQL("CREATE INDEX IF NOT EXISTS index_learning_proposals_createdAt ON learning_proposals(createdAt)")
         }
 
         internal val MIGRATION_23_24 = Migration(23, 24) { database ->
@@ -138,6 +152,29 @@ internal abstract class EtaDatabase : RoomDatabase() {
             database.execSQL("CREATE TABLE IF NOT EXISTS roleplay_user_persona (" +
                 "id TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL)")
             createTextChunkCleanup(database)
+        }
+
+        internal val MIGRATION_25_26 = Migration(25, 26) { database ->
+            // Upstream 3.3.0 and this fork both used schema 22 with different additions.
+            // Preserve either lineage, including upstream installs without automation tables.
+            val hasModelId = database.query("PRAGMA table_info(conversations)").use { cursor ->
+                val nameIndex = cursor.getColumnIndexOrThrow("name")
+                var found = false
+                while (cursor.moveToNext()) if (cursor.getString(nameIndex) == "model_id") found = true
+                found
+            }
+            if (!hasModelId) database.execSQL("ALTER TABLE conversations ADD COLUMN model_id TEXT")
+            // The earlier upstream contribution used schema 25 before adding runtime error codes.
+            listOf("runtime_results", "runtime_archive_runs").forEach { table ->
+                val hasErrorCode = database.query("PRAGMA table_info($table)").use { cursor ->
+                    val nameIndex = cursor.getColumnIndexOrThrow("name")
+                    var found = false
+                    while (cursor.moveToNext()) if (cursor.getString(nameIndex) == "error_code") found = true
+                    found
+                }
+                if (!hasErrorCode) database.execSQL("ALTER TABLE $table ADD COLUMN error_code TEXT NOT NULL DEFAULT ''")
+            }
+            MIGRATION_21_22.migrate(database)
         }
 
         private fun createTextChunkCleanup(database: androidx.sqlite.db.SupportSQLiteDatabase) {

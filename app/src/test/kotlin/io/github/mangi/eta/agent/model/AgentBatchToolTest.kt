@@ -19,6 +19,26 @@ import org.junit.Test
 
 class AgentBatchToolTest {
     @Test
+    fun interjectionSkipsRemainingSequentialMutationsEvenWithContinueAndPreservesCheckpoint() {
+        val controller = AgentRunController()
+        val provider = ScriptedProvider(wrapper(listOf(write("first"), write("second"), write("third")), "sequential", "continue"))
+        val executed = mutableListOf<String>()
+        val result = AgentModelClient.complete(config().copy(terminalTools = true), "执行", AgentModelClient.ToolExecutor { call ->
+            executed += JSONObject(call.argumentsJson).getString("content")
+            controller.steer("停止写入，改为回答")
+            AgentModelClient.ToolResult("{\"ok\":true}")
+        }, provider = provider, runController = controller)
+        assertEquals(listOf("first"), executed)
+        assertFalse(controller.isCancelled)
+        val raw = provider.requests.last().messages.objects().single { it.optString("tool_call_id") == "batch-call" }
+            .getString("content").let(::JSONObject).getJSONArray("results")
+        assertTrue(raw.getJSONObject(0).getBoolean("ok"))
+        assertEquals("USER_SUPPLEMENT_RECEIVED", raw.getJSONObject(1).getJSONObject("result").getString("code"))
+        val checkpoint = result.transcript.single { it.role == "tool" }.content.let(::JSONObject).getJSONArray("results")
+        assertEquals(listOf("completed", "skipped", "skipped"), checkpoint.objects().map { it.getString("status") })
+    }
+
+    @Test
     fun wrapperRunsIndependentQueriesInParallelButReturnsOrderedSingleToolResult() {
         val bothStarted = CountDownLatch(2)
         val secondFinished = CountDownLatch(1)
@@ -119,7 +139,7 @@ class AgentBatchToolTest {
             item("launch_app", JSONObject().put("package_name", "com.example.app")),
             write("done"),
             item("read_file", JSONObject().put("path", "note.txt")),
-            item("tap", JSONObject().put("x", 20).put("y", 30)),
+            item("tap", JSONObject().put("x", 20).put("y", 30).put("coordinate_space", "screen")),
             item("terminal", JSONObject().put("action", "exec").put("command", "true")),
             item("mcp_example", JSONObject().put("value", "known")),
         )
@@ -173,7 +193,7 @@ class AgentBatchToolTest {
     fun sequentialModeCannotBypassDisabledRestrictedRootOrNestedToolBoundaries() {
         val cases = listOf(
             Triple(write("disabled"), config(), null),
-            Triple(item("tap", JSONObject().put("x", 1).put("y", 1)), config(), setOf("batch", "search_apps")),
+            Triple(item("tap", JSONObject().put("x", 1).put("y", 1).put("coordinate_space", "screen")), config(), setOf("batch", "search_apps")),
             Triple(item("read_file", JSONObject().put("path", "note.txt").put("identity", "root")), config().copy(terminalTools = true), null),
             Triple(item("virtual_screen", JSONObject().put("action", "restart")), config(), null),
             Triple(item("mcp_example", JSONObject().put("value", "known")), config(), null),
@@ -222,7 +242,7 @@ class AgentBatchToolTest {
     @Test
     fun sequentialGuiPauseSkipsRemainingMutationAndRecoversOnceEvenWithContinue() {
         val provider = ScriptedProvider(wrapper(listOf(
-            write("first"), item("tap", JSONObject().put("x", 1).put("y", 1)), write("skipped"),
+            write("first"), item("tap", JSONObject().put("x", 1).put("y", 1).put("coordinate_space", "screen")), write("skipped"),
         ), "sequential", "continue"))
         val executed = mutableListOf<String>()
         val recoveries = AtomicInteger()
