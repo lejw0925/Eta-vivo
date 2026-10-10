@@ -40,4 +40,20 @@ class AgentScreenObservationContractTest {
         assertFalse(options.includeUiTree)
         assertEquals(120, options.maxNodes)
     }
+
+    @Test
+    fun emptyVirtualTreeAddsImageOnlyWhenScreenshotOptionIsOmitted() {
+        for (virtualScreen in listOf(false, true)) {
+            for (hasUiNodes in listOf(false, true)) {
+                assertEquals(virtualScreen && !hasUiNodes,
+                    AgentScreenObservationContract.shouldCaptureScreenshot(JSONObject(), hasUiNodes, virtualScreen))
+                assertFalse(AgentScreenObservationContract.shouldCaptureScreenshot(
+                    JSONObject().put("include_screenshot", false), hasUiNodes, virtualScreen))
+                assertTrue(AgentScreenObservationContract.shouldCaptureScreenshot(
+                    JSONObject().put("include_screenshot", true), hasUiNodes, virtualScreen))
+                assertFalse(AgentScreenObservationContract.shouldCaptureScreenshot(
+                    JSONObject().put("include_ui_tree", false), hasUiNodes, virtualScreen))
+            }
+        }
+    }
 }

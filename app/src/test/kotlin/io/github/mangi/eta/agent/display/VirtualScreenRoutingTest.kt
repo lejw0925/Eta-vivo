@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.display
 
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.tool.AgentLocalTools
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.agent.tool.ToolExecutionDecision
@@ -59,6 +60,27 @@ class VirtualScreenRoutingTest {
         for (name in VirtualScreenRoutingPolicy.nodeTools) assertEquals("VIRTUAL_UI_TREE_UNAVAILABLE", capabilities.unavailableCode(name))
         for (name in VirtualScreenRoutingPolicy.coordinateTools) assertEquals(name, null, capabilities.unavailableCode(name))
         assertEquals("ACCESSIBILITY_UNAVAILABLE", capabilities.copy(virtualScreenEnabled = false).unavailableCode("input_text"))
+    }
+
+    @Test
+    fun virtualObservationDoesNotAdvertiseFalseAsTheDefaultAndProjectionDoesNotMutatePrimarySchema() {
+        val primary = AgentToolCatalog.build(terminalTools = false, browserTools = false,
+            capabilities = AgentToolCapabilities(rootAvailable = true))
+        val primaryCopy = primary.toString()
+        val virtual = AgentToolCapabilities(rootAvailable = true, virtualScreenEnabled = true,
+            accessibilityAvailable = false, virtualUiTreeAvailable = false).project(primary)
+        fun function(tools: org.json.JSONArray, name: String) = (0 until tools.length())
+            .map { tools.getJSONObject(it).getJSONObject("function") }.single { it.getString("name") == name }
+        val screenshot = function(virtual, "observe_screen").getJSONObject("parameters")
+            .getJSONObject("properties").getJSONObject("include_screenshot")
+        assertFalse(screenshot.has("default"))
+        assertTrue(screenshot.getString("description").contains("空树自动附截图"))
+        assertTrue(function(virtual, "observe_screen").getString("description").contains("先使用已有的新截图"))
+        assertTrue(function(virtual, "set_clipboard").getString("description").contains("一般输入优先 type_text"))
+        assertEquals(primaryCopy, primary.toString())
+        val names = (0 until virtual.length()).map { virtual.getJSONObject(it).getJSONObject("function").getString("name") }
+        assertTrue(VirtualScreenRoutingPolicy.nodeTools.none { it in names })
+        assertTrue(setOf("observe_screen", "tap", "type_text").all { it in names })
     }
     @Test
     fun allUiToolsUseVirtualExecutionWithoutPrimaryEntryDismissal() {

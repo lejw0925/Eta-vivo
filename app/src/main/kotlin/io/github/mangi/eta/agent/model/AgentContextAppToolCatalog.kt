@@ -93,7 +93,7 @@ internal object AgentContextAppToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "observe_screen",
-                    description = "观察当前手机屏幕，默认只返回前台应用、屏幕尺寸、observation_id 与可见 UI 节点，不附截图。节点为空、目标无法唯一识别、界面以 Canvas/地图/图片/二维码等视觉内容为主，或任务依赖颜色、图像、空间布局时，显式设置 include_screenshot=true；补截图时保持 include_ui_tree=true，以同一次新观察刷新节点和 observation_id，禁止把新截图与旧节点混用。节点动作必须原样携带同一次观察的 observation_id；树被截断但节点语义仍有效时，优先把 max_nodes 提高到 120 后重试，不要仅因截断请求截图。",
+                    description = AgentScreenObservationContract.guidance(virtualScreen = false),
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -104,7 +104,7 @@ internal object AgentContextAppToolCatalog {
                                     JSONObject()
                                         .put("type", "boolean")
                                         .put("default", AgentScreenObservationContract.DEFAULT_INCLUDE_SCREENSHOT)
-                                        .put("description", "是否附加当前屏幕原图给模型，默认 false；仅在 UI 节点不足以完成任务时显式开启")
+                                        .put("description", AgentScreenObservationContract.screenshotDescription(virtualScreen = false))
                                 )
                                 .put(
                                     "include_ui_tree",

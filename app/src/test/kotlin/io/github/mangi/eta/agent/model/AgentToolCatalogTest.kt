@@ -95,7 +95,7 @@ class AgentToolCatalogTest {
         assertEquals(60, properties.getJSONObject("max_nodes").getInt("default"))
         assertEquals(1, properties.getJSONObject("max_nodes").getInt("minimum"))
         assertEquals(120, properties.getJSONObject("max_nodes").getInt("maximum"))
-        assertTrue(function.getString("description").contains("默认只返回"))
+        assertTrue(function.getString("description").startsWith(AgentScreenObservationContract.guidance(virtualScreen = false)))
         assertTrue(function.getString("description").contains("include_screenshot=true"))
         assertTrue(function.getString("description").contains("保持 include_ui_tree=true"))
         assertTrue(function.getString("description").contains("禁止把新截图与旧节点混用"))

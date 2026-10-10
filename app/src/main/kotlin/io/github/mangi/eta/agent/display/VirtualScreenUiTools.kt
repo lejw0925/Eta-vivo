@@ -235,8 +235,9 @@ internal class VirtualScreenUiTools(
                     .put("screen", screen)
                     .put("note", "screen 与截图均为虚拟屏原始像素；所有 GUI 工具均针对该 display。")
             )
-        val captureScreenshot = options.includeScreenshot ||
-            (nodes == null && options.includeUiTree && !args.has("include_screenshot"))
+        val captureScreenshot = AgentScreenObservationContract.shouldCaptureScreenshot(
+            args, hasUiNodes = nodes != null, virtualScreen = true,
+        )
         val capture = if (captureScreenshot) VirtualScreenSession.execute(
             context,
             owner,

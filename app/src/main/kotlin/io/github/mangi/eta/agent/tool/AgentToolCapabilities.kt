@@ -10,6 +10,8 @@ import io.github.mangi.eta.agent.accessibility.AccessibilityProtectionClient
 import io.github.mangi.eta.agent.device.AgentNotificationHistoryService
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.display.VirtualScreenRoutingPolicy
+import io.github.mangi.eta.agent.model.AgentGuiGuidance
+import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import java.util.Locale
 import org.json.JSONArray
 
@@ -87,6 +89,15 @@ internal data class AgentToolCapabilities(
                 if (unavailableCode(name) == null) {
                     if (virtualScreenEnabled && name in VirtualScreenRoutingPolicy.uiTools) {
                         val function = tool.getJSONObject("function")
+                        if (name == "observe_screen") {
+                            function.put("description", AgentScreenObservationContract.guidance(virtualScreen = true))
+                            function.getJSONObject("parameters").getJSONObject("properties")
+                                .getJSONObject("include_screenshot").apply {
+                                    // Omission enables the empty-tree fallback; an explicit false disables it.
+                                    remove("default")
+                                    put("description", AgentScreenObservationContract.screenshotDescription(virtualScreen = true))
+                                }
+                        }
                         function.put(
                             "description",
                             function.getString("description") + if (virtualScreenFallbackEnabled)
@@ -101,7 +112,9 @@ internal data class AgentToolCapabilities(
                         if (name in setOf("set_clipboard", "get_clipboard")) {
                             function.put(
                                 "description",
-                                "仅访问本次虚拟屏运行的临时剪贴板，不读取或修改用户系统剪贴板。"
+                                "仅访问本次虚拟屏运行的临时剪贴板，不读取或修改用户系统剪贴板。" +
+                                    if (name == "set_clipboard") AgentGuiGuidance.CLIPBOARD_DESCRIPTION
+                                        .replace("系统剪贴板", "本次运行的临时剪贴板") else ""
                             )
                         }
                     }

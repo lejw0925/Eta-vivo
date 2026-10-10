@@ -405,6 +405,12 @@ class DeviceValidationRunner : Instrumentation() {
                 probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId })
             val observed = ok("no-tree observation", call(tools, "observe_screen"))
             verify("fixture exposes no usable nodes", observed.getJSONArray("ui_nodes").length() == 0)
+            verify("default empty-tree observation automatically attaches screenshot",
+                observed.getJSONObject("screenshot").optBoolean("attached"))
+            val withoutImage = ok("explicit screenshot suppression", call(tools, "observe_screen",
+                JSONObject().put("include_screenshot", false)))
+            verify("explicit false keeps empty-tree observation without screenshot",
+                !withoutImage.getJSONObject("screenshot").optBoolean("attached"))
             val position = probe()
             val result = tools.execute(AgentModelClient.ToolCall("no-tree-tap", "tap", JSONObject()
                 .put("x", position.getInt("buttonX")).put("y", position.getInt("buttonY"))
