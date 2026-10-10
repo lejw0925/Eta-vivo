@@ -10,10 +10,9 @@ internal object AgentTextSystemToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "type_text",
-                    description = "向输入框写入文本，结果会读回校验。默认 mode=replace 把整个输入框替换为 text，text 为空即清空；" +
-                        "mode=append 在当前光标处插入。指定 index 时写入该 editable 节点，不必先点击；不指定时写入当前输入焦点。" +
-                        "submit=true 写入后按输入法回车，用于搜索、发送；结果 submitted=false 时说明文本已写入但未提交，改为点击发送按钮，不要重复输入。" +
-                        "中文、emoji、长文本都直接传入，无需借助剪贴板。",
+                    description = "向输入框写入文本，具体输入与提交状态以返回结果为准。默认 mode=replace 把整个输入框替换为 text，text 为空即清空；" +
+                        "mode=append 在当前光标处插入；不指定 index 时写入当前输入焦点。" +
+                        AgentGuiGuidance.TEXT_INPUT,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -52,7 +51,7 @@ internal object AgentTextSystemToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "set_clipboard",
-                    description = "把文本写入系统剪贴板。适合准备粘贴长文本、中文、emoji 或特殊字符。",
+                    description = AgentGuiGuidance.CLIPBOARD_DESCRIPTION,
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
