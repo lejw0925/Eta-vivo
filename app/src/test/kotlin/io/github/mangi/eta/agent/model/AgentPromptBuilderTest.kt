@@ -1,8 +1,11 @@
 package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
+import io.github.mangi.eta.agent.roleplay.CharacterCardCodec
+import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillIndexEntry
+import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -74,9 +77,9 @@ class AgentPromptBuilderTest {
         assertTrue(messages.systemContents().any { it.contains("不要例行调用 observe_screen") })
         assertTrue(messages.systemContents().any { it.contains("读取或汇总屏幕信息") })
         assertTrue(messages.systemContents().any { it.contains("确认最终结果") })
-        assertTrue(messages.systemContents().any { it.contains("后续操作依赖特定文本或应用出现") })
+        assertTrue(messages.systemContents().any { it.contains("后续操作依赖特定文本或应用出现且工具可用") })
         assertFalse(messages.systemContents().any { it.contains("点击或打开应用后优先用 wait_for_text") })
-        assertTrue(messages.systemContents().any { it.contains("只读取 UI 树，不附截图") })
+        assertTrue(messages.systemContents().any { it.contains(AgentScreenObservationContract.guidance(virtualScreen = false)) })
         assertTrue(messages.systemContents().any { it.contains("include_screenshot=true") })
         assertTrue(messages.systemContents().any { it.contains("保持 include_ui_tree=true") })
         assertTrue(messages.systemContents().any { it.contains("禁止把新截图与旧节点混用") })
@@ -187,6 +190,40 @@ class AgentPromptBuilderTest {
         assertTrue(memory.contains("revision=${"b".repeat(64)}"))
         assertTrue(memory.contains("用户以前偏好中文"))
         assertEquals("现在改用英文回答", messages.getJSONObject(messages.length() - 1).getString("content"))
+    }
+
+    @Test
+    fun observationAndRecoveryRulesMatchMainAndVirtualToolCapabilitiesAcrossContexts() {
+        val role = RoleplayRunContext("fixture", CharacterCardCodec.create("Fixture"), "User", "", 8192)
+        for (virtualScreen in listOf(false, true)) {
+            for (memoryEnabled in listOf(false, true)) {
+                for (roleplay in listOf(null, role)) {
+                    val messages = AgentPromptBuilder.buildSystemMessages(
+                        config = modelConfig("custom-prompt", terminalTools = false, browserTools = false),
+                        skillContext = SkillContext.EMPTY,
+                        memoryContext = AgentMemoryContext.DISABLED.copy(enabled = memoryEnabled),
+                        rootAvailable = true, roleplayContext = roleplay, virtualScreenEnabled = virtualScreen,
+                    )
+                    val runtime = messages.systemContents().single { it.contains("Eta 运行约束") }
+                    assertTrue(runtime.contains(AgentScreenObservationContract.guidance(virtualScreen)))
+                    assertTrue(runtime.contains(AgentGuiGuidance.accessibility(virtualScreen)))
+                    assertTrue(runtime.contains(AgentGuiGuidance.TEXT_INPUT))
+                    assertTrue(runtime.contains(AgentGuiGuidance.AFTER_ACTION))
+                    assertFalse(runtime.contains("不要借助剪贴板"))
+                    assertFalse(runtime.contains("应换目标或方式，不要原样重复"))
+                    if (virtualScreen) {
+                        assertFalse(runtime.contains("主屏观察与 GUI 操作前"))
+                        assertTrue(runtime.contains("最多补试一次"))
+                        assertTrue(runtime.contains("发送、发布、支付等效果未知时不得补试提交"))
+                    } else assertFalse(runtime.contains("空树会自动附截图"))
+                    val tools = AgentToolCatalog.build(terminalTools = false, browserTools = false,
+                        capabilities = AgentToolCapabilities(rootAvailable = true, virtualScreenEnabled = virtualScreen))
+                    val observe = (0 until tools.length()).map { tools.getJSONObject(it).getJSONObject("function") }
+                        .single { it.getString("name") == "observe_screen" }
+                    assertTrue(observe.getString("description").startsWith(AgentScreenObservationContract.guidance(virtualScreen)))
+                }
+            }
+        }
     }
 
     private fun modelConfig(
