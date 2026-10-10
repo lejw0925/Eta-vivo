@@ -1472,7 +1472,7 @@
     <string name="virtual_screen_text_insert">插入文字</string>
     <string name="default_prompt_title">預設助手提示詞</string>
     <string name="default_prompt_summary">編輯一般助手對話的預設系統提示詞</string>
-    <string name="default_prompt_description">儲存後從下一次一般助手請求生效。供應商單獨設定的提示詞優先，角色對話使用角色卡。留空或還原預設可使用 Eta 內建提示詞。</string>
+    <string name="default_prompt_description">儲存後從下一次一般助手請求生效。供應商單獨設定的提示詞優先，角色對話使用角色卡。此提示詞位於前面，Eta 的工具、權限與螢幕路由規則仍會追加並生效。留空或還原預設可使用 Eta 內建提示詞。</string>
     <string name="default_prompt_field">系統提示詞</string>
     <string name="default_prompt_reset">還原預設</string>
     <string name="default_prompt_save">儲存提示詞</string>

@@ -1518,7 +1518,7 @@
     <string name="virtual_screen_text_insert">Insert text</string>
     <string name="default_prompt_title">Default assistant prompt</string>
     <string name="default_prompt_summary">Edit the system prompt for regular assistant conversations</string>
-    <string name="default_prompt_description">Applies to the next regular assistant request. A provider’s custom prompt takes priority. Character conversations use their character cards. Leave blank or reset to use Eta’s built-in prompt.</string>
+    <string name="default_prompt_description">Applies to the next regular assistant request. A provider’s custom prompt takes priority. Character conversations use their character cards. This prompt appears before Eta’s tool, permission, and screen-routing rules, which still apply. Leave blank or reset to use Eta’s built-in prompt.</string>
     <string name="default_prompt_field">System prompt</string>
     <string name="default_prompt_reset">Reset to default</string>
     <string name="default_prompt_save">Save prompt</string>

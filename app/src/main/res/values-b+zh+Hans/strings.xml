@@ -1498,7 +1498,7 @@
     <string name="virtual_screen_text_insert">插入文本</string>
     <string name="default_prompt_title">默认助手提示词</string>
     <string name="default_prompt_summary">编辑普通助手会话的默认系统提示词</string>
-    <string name="default_prompt_description">保存后从下一次普通助手请求生效。提供商单独设置的提示词优先，角色会话使用角色卡。留空或恢复默认可使用 Eta 内置提示词。</string>
+    <string name="default_prompt_description">保存后从下一次普通助手请求生效。提供商单独设置的提示词优先，角色会话使用角色卡。此提示词位于前面，Eta 的工具、权限与屏幕路由规则仍会追加并生效。留空或恢复默认可使用 Eta 内置提示词。</string>
     <string name="default_prompt_field">系统提示词</string>
     <string name="default_prompt_reset">恢复默认</string>
     <string name="default_prompt_save">保存提示词</string>

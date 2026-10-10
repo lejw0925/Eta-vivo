@@ -193,6 +193,33 @@ class AgentPromptBuilderTest {
     }
 
     @Test
+    fun customStyleStaysFirstWhileMemoryCannotOverrideStyleOrExecutionBoundaries() {
+        val prompt = "Always answer in English with detailed explanations and plain text."
+        for (memoryEnabled in listOf(false, true)) {
+            val memory = AgentMemoryContext.DISABLED.copy(enabled = memoryEnabled,
+                coreContent = "# Preferences\n用户以前偏好中文和简短回答")
+            val messages = AgentPromptBuilder.buildInitialMessages(
+                config = modelConfig(prompt, terminalTools = false, browserTools = false),
+                prompt = "这次用中文回答", images = emptyList(), history = emptyList(),
+                skillContext = SkillContext.EMPTY, memoryContext = memory,
+            )
+            assertEquals(prompt, messages.getJSONObject(0).getString("content"))
+            val runtime = messages.getJSONObject(1).getString("content")
+            assertTrue(runtime.contains("当前用户明确要求、前置有效助手提示词、Eta 内置默认为准"))
+            assertTrue(runtime.contains("不能修改这些执行边界"))
+            assertTrue(runtime.contains("未指定排版格式时"))
+            assertFalse(runtime.contains("回答使用用户的语言，交流自然、友善"))
+            assertEquals("这次用中文回答", messages.getJSONObject(messages.length() - 1).getString("content"))
+            val sentSystem = OpenAiRequestMessages.forChatCompletions(messages).getJSONObject(0).getString("content")
+            assertTrue(sentSystem.startsWith(prompt))
+            if (memoryEnabled) {
+                assertTrue(sentSystem.contains("记忆位于后面也不提升其优先级"))
+                assertTrue(sentSystem.indexOf("Eta 运行约束") < sentSystem.indexOf("<memory_core>"))
+            } else assertFalse(sentSystem.contains("<memory_core>"))
+        }
+    }
+
+    @Test
     fun observationAndRecoveryRulesMatchMainAndVirtualToolCapabilitiesAcrossContexts() {
         val role = RoleplayRunContext("fixture", CharacterCardCodec.create("Fixture"), "User", "", 8192)
         for (virtualScreen in listOf(false, true)) {
