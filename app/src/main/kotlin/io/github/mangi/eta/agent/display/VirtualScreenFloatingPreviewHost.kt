@@ -25,7 +25,6 @@ import android.view.ViewOutlineProvider
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
@@ -67,7 +66,6 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
     private var collapsed = false
     private var edge = FloatingPreviewPlacement.Edge.RIGHT
     private var run: String? = null
-    private var dismissedRun: String? = null
     private var lastFrame = 0L
     private var generation = 0L
     private var dragging = false
@@ -90,12 +88,12 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
 
     private fun render() {
         if (run != state.activeRunId) {
-            run = state.activeRunId; collapsed = false; dismissedRun = null
+            run = state.activeRunId; collapsed = false
             position = null
             folding?.cancel()
         }
         val visible = settings.virtualScreenEnabled && settings.virtualScreenFloatingPreviewEnabled &&
-            state.isAgentControlling && run != null && dismissedRun != run && !state.fullViewerVisible &&
+            state.isAgentControlling && run != null && !state.fullViewerVisible &&
             Settings.canDrawOverlays(context) && context.getSystemService(PowerManager::class.java).isInteractive &&
             !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
         if (!visible) { removeWindow(); return }
@@ -118,22 +116,8 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
             }
             contentDescription = context.getString(R.string.virtual_screen_floating_open)
         }
-        val column = LinearLayout(windowContext).apply { orientation = LinearLayout.VERTICAL }
-        val header = LinearLayout(windowContext).apply { gravity = Gravity.CENTER_VERTICAL }
-        val title = TextView(windowContext).apply {
-            text = context.getString(R.string.virtual_screen_viewer_title); setTextColor(Color.WHITE)
-            textSize = 11f; setPadding(dp(10), 0, 0, 0)
-        }
-        header.addView(title, LinearLayout.LayoutParams(0, dp(30), 1f))
-        header.addView(TextView(windowContext).apply {
-            text = "×"; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
-            contentDescription = context.getString(R.string.virtual_screen_floating_dismiss)
-            setOnClickListener { dismissedRun = run; removeWindow() }
-        }, LinearLayout.LayoutParams(dp(32), dp(30)))
-        column.addView(header)
         val image = VirtualScreenSurfaceView(windowContext).apply { touchEnabled = false }
-        column.addView(image, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        container.addView(column, FrameLayout.LayoutParams(-1, -1))
+        container.addView(image, FrameLayout.LayoutParams(-1, -1))
         val pill = TextView(windowContext).apply {
             text = "▣"; textSize = 20f; typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER; setTextColor(Color.WHITE)
@@ -189,7 +173,7 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
         }
         try {
             manager.addView(container, layout)
-            root = container; surface = image; expanded = column; folded = pill; params = layout
+            root = container; surface = image; expanded = image; folded = pill; params = layout
         } catch (error: RuntimeException) {
             AndroidAgentLogger.warn("Virtual floating preview unavailable: type=${error.javaClass.simpleName}")
         }
