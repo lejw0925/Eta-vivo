@@ -7,7 +7,10 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PathMeasure
 import android.graphics.PixelFormat
+import android.graphics.PointF
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
@@ -16,6 +19,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import kotlin.math.min
@@ -76,6 +80,10 @@ object GestureIndicator {
     }
 
     fun showSwipe(context: Context, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int) {
+        showSwipePath(context, listOf(PointF(x1.toFloat(), y1.toFloat()), PointF(x2.toFloat(), y2.toFloat())), durationMs)
+    }
+
+    fun showSwipePath(context: Context, points: List<PointF>, durationMs: Int) {
         mainHandler.post {
             val service = AgentAccessibilityService.current()
             val overlayContext = service ?: context
@@ -86,7 +94,7 @@ object GestureIndicator {
             }
 
             val wm = overlayContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return@post
-            val indicatorView = SwipeIndicatorView(overlayContext, x1.toFloat(), y1.toFloat(), x2.toFloat(), y2.toFloat(), durationMs)
+            val indicatorView = SwipeIndicatorView(overlayContext, points, durationMs)
 
             val lp = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -163,7 +171,11 @@ internal class GestureIndicatorHost(context: Context) : FrameLayout(context) {
     }
 
     fun showSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Int) {
-        attach(SwipeIndicatorView(context, x1, y1, x2, y2, durationMs),
+        showSwipePath(listOf(PointF(x1, y1), PointF(x2, y2)), durationMs)
+    }
+
+    fun showSwipePath(points: List<PointF>, durationMs: Int) {
+        attach(SwipeIndicatorView(context, points, durationMs),
             LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
@@ -264,16 +276,22 @@ private class PressIndicatorView(
 
 private class SwipeIndicatorView(
     context: Context,
-    private val startX: Float,
-    private val startY: Float,
-    private val endX: Float,
-    private val endY: Float,
+    points: List<PointF>,
     private val durationMs: Int
 ) : AnimatedIndicatorView(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var progress = 0f
     private var alphaVal = 1f
     private var animator: AnimatorSet? = null
+    private val startX = points.first().x
+    private val startY = points.first().y
+    private val path = Path().apply {
+        moveTo(startX, startY)
+        points.drop(1).forEach { lineTo(it.x, it.y) }
+    }
+    private val measure = PathMeasure(path, false)
+    private val trail = Path()
+    private val head = floatArrayOf(startX, startY)
 
     init {
         paint.color = 0xFF2879FB.toInt() // Premium tech blue
@@ -282,7 +300,8 @@ private class SwipeIndicatorView(
 
     override fun startIndicatorAnimation(onFinished: () -> Unit) {
         val progressAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = durationMs.coerceAtLeast(300).toLong()
+            duration = durationMs.coerceIn(100, 2_000).toLong()
+            interpolator = LinearInterpolator()
             addUpdateListener { animation ->
                 progress = animation.animatedValue as Float
                 invalidate()
@@ -316,19 +335,21 @@ private class SwipeIndicatorView(
         super.onDraw(canvas)
         val density = resources.displayMetrics.density
 
-        // Current swipe head point
-        val curX = startX + (endX - startX) * progress
-        val curY = startY + (endY - startY) * progress
+        measure.getPosTan(measure.length * progress, head, null)
+        val curX = head[0]
+        val curY = head[1]
 
         // 先画极淡的路径预告，再让实线和指尖同步前进，避免轨迹看起来比手势先发生。
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f * density
         paint.alpha = (alphaVal * 0.12f * 255).toInt()
-        canvas.drawLine(startX, startY, endX, endY, paint)
+        canvas.drawPath(path, paint)
 
         paint.strokeWidth = 3f * density
         paint.alpha = (alphaVal * 0.62f * 255).toInt()
-        canvas.drawLine(startX, startY, curX, curY, paint)
+        trail.rewind()
+        measure.getSegment(0f, measure.length * progress, trail, true)
+        canvas.drawPath(trail, paint)
 
         paint.style = Paint.Style.FILL
         paint.alpha = (alphaVal * 0.9f * 255).toInt()

@@ -18,6 +18,7 @@ import io.github.mangi.eta.agent.browser.AgentBrowserSession
 import io.github.mangi.eta.agent.device.DeviceControlUnavailableException
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.RootShellDeviceController
+import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentHttpClient
@@ -686,26 +687,22 @@ internal class AgentLocalTools(
     }
 
     private fun swipe(args: JSONObject): String {
-        val start = convertPoint(
-            x = args.optInt("x1"),
-            y = args.optInt("y1"),
-            coordinateSpace = args.optString("coordinate_space")
-        )
-        val end = convertPoint(
-            x = args.optInt("x2"),
-            y = args.optInt("y2"),
-            coordinateSpace = args.optString("coordinate_space")
-        )
-        val durationMs = args.optInt("duration_ms", 500)
+        val rawPoints = try {
+            SwipePath.parse(args)
+        } catch (error: IllegalArgumentException) {
+            throw InvalidToolArgumentException(error.message ?: "无效的 swipe 路径")
+        }
+        val points = rawPoints.map { point ->
+            val converted = convertPoint(point.x, point.y, args.optString("coordinate_space"))
+            SwipePath.Point(converted.x, converted.y)
+        }
+        val durationMs = args.optInt("duration_ms", 500).coerceIn(100, 2_000)
         AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.SWIPE)
-        showSwipe(start.x, start.y, end.x, end.y, durationMs)
-        return deviceController.swipe(
-            start.x,
-            start.y,
-            end.x,
-            end.y,
-            durationMs
-        )
+        GestureIndicator.showSwipePath(context, points.map { android.graphics.PointF(it.x.toFloat(), it.y.toFloat()) }, durationMs)
+        if (args.has("path")) return deviceController.swipePath(context, rootCommandExecutor, points, durationMs)
+        val start = points.first()
+        val end = points.last()
+        return deviceController.swipe(start.x, start.y, end.x, end.y, durationMs)
     }
 
     private fun scrollElement(args: JSONObject): String {

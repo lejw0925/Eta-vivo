@@ -291,6 +291,27 @@ internal class RootShellDeviceController(
         return inputCommand("input swipe $x1 $y1 $x2 $y2 $duration", "swipe")
     }
 
+    fun swipePath(context: Context, root: BoundedRootCommandExecutor, points: List<SwipePath.Point>, durationMs: Int): String {
+        if (AgentAccessibilityService.current() == null && !rootAvailable()) return accessibilityUnavailable()
+        val (width, height) = screenSize()
+        SwipePath.validate(points, width, height)
+        val duration = durationMs.coerceIn(100, 2_000)
+        AgentAccessibilityService.current()?.let { service ->
+            val result = service.gestureSwipePath(points, duration.toLong())
+            if (result.ok) {
+                waitForUiSettle("swipe")
+                return nodeActionJson("swipe", result)
+            }
+            if (!GestureFallbackPolicy.mayFallbackToRoot(result.code) || !rootAvailable()) {
+                return nodeActionJson("swipe", result)
+            }
+        }
+        val result = RootSwipePathBridge.execute(context, root, points, duration, width, height)
+            .put("tool", "swipe").put("executor", "root").put("method", "INPUT_SWIPE_PATH")
+        if (result.optBoolean("ok")) waitForUiSettle("swipe")
+        return result.toString()
+    }
+
     fun scroll(direction: String, amount: String = ""): String {
         val parsed = ScrollDirection.parse(direction)
             ?: return scrollErrorJson(

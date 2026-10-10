@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.display
 
 import kotlin.math.abs
+import io.github.mangi.eta.agent.device.SwipePath
 
 /** Counts attempts against observed state, rather than total model rounds. */
 internal class VirtualScreenProgressGuard(private val now: () -> Long = { System.nanoTime() / 1_000_000 }) {
@@ -18,9 +19,20 @@ internal class VirtualScreenProgressGuard(private val now: () -> Long = { System
         val y: Int? = null,
         val endX: Int? = null,
         val endY: Int? = null,
+        val path: List<SwipePath.Point>? = null,
     ) {
         fun sameTarget(other: Action): Boolean = kind == other.kind && target == other.target &&
-            near(x, other.x) && near(y, other.y) && near(endX, other.endX) && near(endY, other.endY)
+            near(x, other.x) && near(y, other.y) && near(endX, other.endX) && near(endY, other.endY) &&
+            samePath(other)
+
+        private fun samePath(other: Action): Boolean {
+            val first = path ?: if (kind == "swipe" && x != null && y != null && endX != null && endY != null)
+                listOf(SwipePath.Point(x, y), SwipePath.Point(endX, endY)) else null
+            val second = other.path ?: if (other.kind == "swipe" && other.x != null && other.y != null && other.endX != null && other.endY != null)
+                listOf(SwipePath.Point(other.x, other.y), SwipePath.Point(other.endX, other.endY)) else null
+            if (first == null || second == null) return first == second
+            return first.size == second.size && first.zip(second).all { (a, b) -> near(a.x, b.x) && near(a.y, b.y) }
+        }
 
         private fun near(first: Int?, second: Int?): Boolean =
             if (first == null || second == null) first == second else abs(first.toLong() - second) <= 48

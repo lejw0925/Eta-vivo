@@ -947,6 +947,23 @@ class AgentAccessibilityService : AccessibilityService() {
             displayId = displayId,
         )
 
+    internal fun gestureSwipePath(
+        points: List<io.github.mangi.eta.agent.device.SwipePath.Point>,
+        durationMs: Long,
+        displayId: Int = android.view.Display.DEFAULT_DISPLAY,
+    ): NodeActionResult {
+        require(points.size in 2..io.github.mangi.eta.agent.device.SwipePath.MAX_POINTS)
+        return dispatchGestureResult(
+            Path().apply {
+                moveTo(points.first().x.toFloat(), points.first().y.toFloat())
+                points.drop(1).forEach { lineTo(it.x.toFloat(), it.y.toFloat()) }
+            },
+            durationMs.coerceIn(100, 2_000),
+            successMethod = "GESTURE_SWIPE_PATH",
+            displayId = displayId,
+        )
+    }
+
     fun globalActionResult(name: String): NodeActionResult {
         val action = when (name.uppercase()) {
             "BACK" -> GLOBAL_ACTION_BACK

@@ -37,6 +37,7 @@ internal object AgentVirtualScreenToolCatalog {
                         .put("x", number(0, 1439)).put("y", number(0, 3199))
                         .put("x1", number(0, 1439)).put("y1", number(0, 3199))
                         .put("x2", number(0, 1439)).put("y2", number(0, 3199))
+                        .put("path", AgentToolSchema.swipePath().put("description", "swipe 的单指连续路径，2–64 个 {x,y} 点，使用此虚拟屏的像素坐标，中途不抬手。与 x1/y1/x2/y2 二选一；durationMs 为总时长。"))
                         .put("durationMs", number(100, 2000))
                 )
                     .put("required", JSONArray().put("action"))

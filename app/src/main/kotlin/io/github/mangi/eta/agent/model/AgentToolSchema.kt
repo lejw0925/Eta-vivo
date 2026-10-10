@@ -4,6 +4,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal object AgentToolSchema {
+    fun swipePath(): JSONObject = JSONObject()
+        .put("type", "array")
+        .put("minItems", 2)
+        .put("maxItems", io.github.mangi.eta.agent.device.SwipePath.MAX_POINTS)
+        .put("description", "单指依次经过的 2–64 个点，中途不抬手；各点使用同一个 coordinate_space。与 x1/y1/x2/y2 二选一。duration_ms 是整条路径的总时长。")
+        .put("items", JSONObject().put("type", "object").put("additionalProperties", false)
+            .put("properties", JSONObject()
+                .put("x", JSONObject().put("type", "integer").put("minimum", 0))
+                .put("y", JSONObject().put("type", "integer").put("minimum", 0)))
+            .put("required", JSONArray().put("x").put("y")))
+
     fun coordinateSpace(): JSONObject =
         JSONObject()
             .put("type", "string")

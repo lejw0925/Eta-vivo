@@ -26,6 +26,50 @@ public class DisplayProbeActivity extends Activity {
         state = getSharedPreferences("display_probe", MODE_PRIVATE);
         state.edit().clear().putInt("display", getDisplay().getDisplayId()).putInt("taps", 0)
             .putInt("longPresses", 0).putString("text", "").apply();
+        if (getIntent().getData() != null && "swipe-path".equals(getIntent().getData().getHost())) {
+            if (getActionBar() != null) getActionBar().hide();
+            View canvas = new View(this) {
+                final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+                org.json.JSONArray events = new org.json.JSONArray();
+                @Override protected void onDraw(android.graphics.Canvas output) {
+                    output.drawColor(0xfff5f5f5);
+                    paint.setColor(0xff2255aa);
+                    paint.setTextSize(48);
+                    output.drawText("Gestures: " + state.getInt("gestures", 0), 60, 100, paint);
+                }
+                private void record(int action, float x, float y, long time, long downTime) {
+                    if (events.length() >= 1024) return;
+                    try {
+                        events.put(new org.json.JSONObject().put("action", action).put("x", x).put("y", y)
+                            .put("time", time).put("downTime", downTime));
+                    } catch (org.json.JSONException error) { throw new RuntimeException(error); }
+                }
+                @Override public boolean onTouchEvent(android.view.MotionEvent event) {
+                    int action = event.getActionMasked();
+                    if (action == android.view.MotionEvent.ACTION_DOWN) events = new org.json.JSONArray();
+                    int[] location = new int[2];
+                    getLocationOnScreen(location);
+                    for (int index = 0; index < event.getHistorySize(); index++) {
+                        record(android.view.MotionEvent.ACTION_MOVE, event.getHistoricalX(index) + location[0],
+                            event.getHistoricalY(index) + location[1], event.getHistoricalEventTime(index), event.getDownTime());
+                    }
+                    record(action, event.getRawX(), event.getRawY(), event.getEventTime(), event.getDownTime());
+                    if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) {
+                        state.edit().putString("touchEvents", events.toString())
+                            .putInt("gestures", state.getInt("gestures", 0) + 1).apply();
+                        invalidate();
+                    }
+                    return true;
+                }
+            };
+            setContentView(canvas);
+            canvas.post(() -> {
+                Point dimensions = new Point();
+                getDisplay().getRealSize(dimensions);
+                state.edit().putInt("displayWidth", dimensions.x).putInt("displayHeight", dimensions.y).apply();
+            });
+            return;
+        }
         if (getIntent().getData() != null && "empty-tree".equals(getIntent().getData().getHost())) {
             if (getActionBar() != null) getActionBar().hide();
             View canvas = new View(this) {

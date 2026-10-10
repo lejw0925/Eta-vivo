@@ -1,5 +1,7 @@
 package io.github.mangi.eta.agent.display
 
+import io.github.mangi.eta.agent.device.SwipePath
+
 internal data class VirtualDisplayInfo(
     val sessionId: String,
     val owner: String,
@@ -30,6 +32,7 @@ internal data class VirtualScreenGesture(
     val endY: Int = y,
     val durationMs: Int = 500,
     val startedAt: Long,
+    val path: List<SwipePath.Point>? = null,
 )
 
 internal data class VirtualScreenViewerState(

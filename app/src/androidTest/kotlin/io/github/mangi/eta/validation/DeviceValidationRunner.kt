@@ -28,6 +28,9 @@ import androidx.activity.compose.setContent
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.agent.device.BoundedRootCommandExecutor
+import io.github.mangi.eta.agent.device.RootSwipePathBridge
+import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.display.MainScreenFallbackDecision
 import io.github.mangi.eta.agent.display.MainScreenFallbackApproval
 import io.github.mangi.eta.agent.display.VirtualScreenAppConflictDialog
@@ -129,6 +132,7 @@ class DeviceValidationRunner : Instrumentation() {
                 "gui_audit_baseline", "gui_audit" -> validateGuiAudit(mode == "gui_audit")
                 "gui_edge" -> validateGuiAfterAction()
                 "gui_no_tree" -> validateGuiWithoutTree()
+                "swipe_path" -> validateSwipePath()
                 "floating" -> validateFloatingPreview()
                 "feature_ui" -> DeviceFeatureUiValidation(this, automation) { record -> checks += record }.run()
                 "interjection" -> DeviceInterjectionValidation(targetContext) { record -> checks += record }.run()
@@ -301,6 +305,93 @@ class DeviceValidationRunner : Instrumentation() {
             ok("unified append", call(tools, "type_text", JSONObject().put("text", " test").put("mode", "append")))
             eventually("append preserves existing text", { probe().optString("text") == "$text test" })
             tools.retainVirtualScreenOnSuccess()
+        }
+    }
+
+    private fun validateSwipePath() {
+        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
+        fun path(position: JSONObject) = listOf(
+            SwipePath.Point(position.getInt("displayWidth") / 4, position.getInt("displayHeight") / 3),
+            SwipePath.Point(position.getInt("displayWidth") * 3 / 4, position.getInt("displayHeight") / 3),
+            SwipePath.Point(position.getInt("displayWidth") * 3 / 4, position.getInt("displayHeight") * 2 / 3),
+            SwipePath.Point(position.getInt("displayWidth") / 4, position.getInt("displayHeight") * 2 / 3),
+            SwipePath.Point(position.getInt("displayWidth") / 4, position.getInt("displayHeight") / 3),
+        )
+        fun verifyStroke(name: String, expected: List<SwipePath.Point>, count: Int) {
+            eventually("$name received", { probe().optInt("gestures") == count })
+            val touches = org.json.JSONArray(probe().getString("touchEvents"))
+            val events = (0 until touches.length()).map(touches::getJSONObject)
+            verify("$name one down and one up", events.count { it.getInt("action") == MotionEvent.ACTION_DOWN } == 1 &&
+                events.count { it.getInt("action") == MotionEvent.ACTION_UP } == 1 && events.none { it.getInt("action") == MotionEvent.ACTION_CANCEL })
+            verify("$name same pointer down time", events.all { it.getLong("downTime") == events.first().getLong("downTime") })
+            var from = 0
+            expected.forEach { vertex ->
+                val found = (from until events.size).firstOrNull { index ->
+                    kotlin.math.abs(events[index].getDouble("x") - vertex.x) <= 40 &&
+                        kotlin.math.abs(events[index].getDouble("y") - vertex.y) <= 40
+                }
+                verify("$name vertex $vertex", found != null)
+                from = found!! + 1
+            }
+        }
+        if (!targetContext.getSystemService(KeyguardManager::class.java).isKeyguardLocked) {
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = false) } }
+            shell("am start --display 0 -n $component -d eta-validation://swipe-path")
+            eventually("primary path fixture ready", { probe().optInt("display") == 0 && probe().optInt("displayWidth") > 0 })
+            val position = probe()
+            val points = path(position)
+            tools("primary-swipe-path").use { tools ->
+                ok("primary path observation", call(tools, "observe_screen"))
+                val result = ok("primary accessibility path", call(tools, "swipe", JSONObject()
+                    .put("path", SwipePath.toJson(points)).put("duration_ms", 900)))
+                verify("primary path accessibility executor", result.optString("executor") == "accessibility")
+                verify("primary path carries after observation", result.has("after"))
+                verifyStroke("primary accessibility", points, 1)
+            }
+            BoundedRootCommandExecutor(NoOpLogger).use { root ->
+                ok("primary Root path", RootSwipePathBridge.execute(targetContext, root, points, 900,
+                    position.getInt("displayWidth"), position.getInt("displayHeight")))
+                verifyStroke("primary Root", points, 2)
+            }
+        } else sendStatus(0, Bundle().apply { putString("stream", "SKIP: primary path while keyguard locked\n") })
+        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true) } }
+        tools("virtual-swipe-path").use { tools ->
+            ok("create path display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
+            ok("launch path fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", component).put("uri", "eta-validation://swipe-path")))
+            eventually("virtual path fixture ready", { probe().optInt("display") == VirtualScreenSession.state.value.display?.displayId &&
+                probe().optInt("displayWidth") > 0 })
+            ok("virtual path observation", call(tools, "observe_screen"))
+            val position = probe()
+            val points = path(position)
+            val invalid = points.toMutableList().apply { this[2] = SwipePath.Point(position.getInt("displayWidth"), 300) }
+            verify("interior point outside display is rejected", !call(tools, "swipe", JSONObject()
+                .put("path", SwipePath.toJson(invalid))).optBoolean("ok"))
+            verify("invalid path sends no touch", probe().optInt("gestures") == 0)
+            val normalized = listOf(SwipePath.Point(250, 333), SwipePath.Point(750, 333), SwipePath.Point(750, 666),
+                SwipePath.Point(250, 666), SwipePath.Point(250, 333))
+            val expected = normalized.map { SwipePath.Point(it.x * (position.getInt("displayWidth") - 1) / 999,
+                it.y * (position.getInt("displayHeight") - 1) / 999) }
+            val result = ok("virtual normalized path", call(tools, "swipe", JSONObject().put("path", SwipePath.toJson(normalized))
+                .put("coordinate_space", "normalized").put("duration_ms", 900)))
+            verify("virtual path carries after observation", result.has("after"))
+            verifyStroke("virtual normalized", expected, 1)
+            verify("virtual indicator keeps all vertices", VirtualScreenSession.state.value.gesture?.path == expected)
+            ok("virtual explicit path", call(tools, "virtual_screen", JSONObject().put("action", "swipe")
+                .put("path", SwipePath.toJson(points)).put("durationMs", 900)))
+            verifyStroke("virtual explicit", points, 2)
+            ok("launch landscape path fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
+                .put("component", "io.github.mangi.eta.test/${LandscapeProbeActivity::class.java.name}")
+                .put("uri", "eta-validation://swipe-path")))
+            eventually("landscape path geometry ready", { probe().optInt("displayWidth") > probe().optInt("displayHeight") &&
+                VirtualScreenSession.state.value.display?.width == probe().optInt("displayWidth") })
+            ok("landscape path observation", call(tools, "observe_screen"))
+            val landscapePath = path(probe())
+            ok("landscape continuous path", call(tools, "swipe", JSONObject().put("path", SwipePath.toJson(landscapePath))
+                .put("duration_ms", 900)))
+            verifyStroke("landscape", landscapePath, 1)
+            verify("landscape indicator uses rotated geometry", VirtualScreenSession.state.value.gesture?.path == landscapePath)
+            ok("close path display", call(tools, "virtual_screen", JSONObject().put("action", "close")))
         }
     }
 

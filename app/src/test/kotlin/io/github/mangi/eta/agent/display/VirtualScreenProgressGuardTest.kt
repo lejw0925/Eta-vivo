@@ -4,10 +4,36 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.github.mangi.eta.agent.device.SwipePath
 
 class VirtualScreenProgressGuardTest {
     private val still = VirtualScreenProgressGuard.Evidence("run:display:app", nodes = "same", image = 0)
     private val tap = VirtualScreenProgressGuard.Action("tap", x = 90, y = 88)
+
+    @Test
+    fun differentIntermediateVerticesDoNotCountAsTheSameSwipe() {
+        val guard = VirtualScreenProgressGuard()
+        val path = VirtualScreenProgressGuard.Action("swipe", x = 20, y = 20, endX = 120, endY = 120,
+            path = listOf(SwipePath.Point(20, 20), SwipePath.Point(120, 20), SwipePath.Point(120, 120)))
+        repeat(3) { assertFalse(guard.beforeAction(path, still).paused) }
+        val alternate = path.copy(path = listOf(SwipePath.Point(20, 20), SwipePath.Point(20, 120), SwipePath.Point(120, 120)))
+        val decision = guard.beforeAction(alternate, still)
+        assertFalse(decision.paused)
+        assertEquals(1, decision.repeatedAttempts)
+        assertEquals(4, decision.attempts)
+        assertTrue(guard.beforeAction(path, still).paused)
+    }
+
+    @Test
+    fun twoPointPathsAndLegacySwipesShareTheSameRepeatBudget() {
+        val legacy = VirtualScreenProgressGuard.Action("swipe", x = 20, y = 20, endX = 120, endY = 120)
+        val path = legacy.copy(path = listOf(SwipePath.Point(20, 20), SwipePath.Point(120, 120)))
+        val guard = VirtualScreenProgressGuard()
+        guard.beforeAction(legacy, still)
+        guard.beforeAction(path, still)
+        guard.beforeAction(path, still)
+        assertTrue(guard.beforeAction(legacy, still).paused)
+    }
 
     @Test
     fun missedClickAllowsThreeAttemptsThenPausesBeforeFourth() {

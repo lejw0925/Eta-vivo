@@ -70,3 +70,6 @@
 -keep class io.github.mangi.eta.agent.display.VirtualScreenRootTextInput {
     public static void main(java.lang.String[]);
 }
+-keep class io.github.mangi.eta.agent.device.RootSwipeCommandMain {
+    public static void main(java.lang.String[]);
+}

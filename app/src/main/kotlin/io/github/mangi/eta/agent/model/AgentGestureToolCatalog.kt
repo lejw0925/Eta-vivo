@@ -122,7 +122,7 @@ internal object AgentGestureToolCatalog {
             .put(
                 AgentToolSchema.function(
                     name = "swipe",
-                    description = "从一个坐标拖到另一个坐标（手指方向），用于拖动滑块、轮播、地图等精确手势。浏览列表请用 scroll。坐标系同 tap，必须显式填写 coordinate_space。",
+                    description = "单指滑动（手指方向），用于拖动滑块、轮播、地图和连续轨迹。直线用 x1/y1/x2/y2；组合路径用 path:[{x,y},...]，依次经过各点，中途不抬手，按路径长度分配总时长。两种写法不能混用。浏览列表请用 scroll。坐标系同 tap，必须显式填写 coordinate_space。",
                     parameters = JSONObject()
                         .put("type", "object")
                         .put(
@@ -132,6 +132,7 @@ internal object AgentGestureToolCatalog {
                                 .put("y1", JSONObject().put("type", "integer"))
                                 .put("x2", JSONObject().put("type", "integer"))
                                 .put("y2", JSONObject().put("type", "integer"))
+                                .put("path", AgentToolSchema.swipePath())
                                 .put(
                                     "duration_ms",
                                     JSONObject()
@@ -140,7 +141,16 @@ internal object AgentGestureToolCatalog {
                                 )
                                 .put("coordinate_space", AgentToolSchema.coordinateSpace())
                         )
-                        .put("required", JSONArray().put("x1").put("y1").put("x2").put("y2").put("coordinate_space"))
+                        .put("required", JSONArray().put("coordinate_space"))
+                        .put("oneOf", JSONArray()
+                            .put(JSONObject().put("required", JSONArray().put("x1").put("y1").put("x2").put("y2"))
+                                .put("not", JSONObject().put("required", JSONArray().put("path"))))
+                            .put(JSONObject().put("required", JSONArray().put("path"))
+                                .put("not", JSONObject().put("anyOf", JSONArray().apply {
+                                    listOf("x1", "y1", "x2", "y2").forEach { key ->
+                                        put(JSONObject().put("required", JSONArray().put(key)))
+                                    }
+                                }))))
                 )
             )
             .put(

@@ -5,6 +5,7 @@ import android.util.Base64
 import android.os.SystemClock
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.RootAccess
+import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.data.datastore.SettingsDataStore
@@ -528,8 +529,10 @@ internal object VirtualScreenSession {
         return when (action) {
             "tap", "long_press" -> if (point("x") != null && point("y") != null)
                 VirtualScreenProgressGuard.Action(action, x = point("x"), y = point("y")) else null
-            "swipe" -> if (listOf("x1", "y1", "x2", "y2").all { point(it) != null })
-                VirtualScreenProgressGuard.Action(action, x = point("x1"), y = point("y1"), endX = point("x2"), endY = point("y2")) else null
+            "swipe" -> runCatching { SwipePath.parse(args) }.getOrNull()?.let { points ->
+                VirtualScreenProgressGuard.Action(action, x = points.first().x, y = points.first().y,
+                    endX = points.last().x, endY = points.last().y, path = points)
+            }
             "key", "back" -> VirtualScreenProgressGuard.Action("key", if (action == "back") "BACK" else args.optString("button"))
             "text" -> if (args.has("text")) VirtualScreenProgressGuard.Action("text", args.optBoolean("replace").toString()) else null
             "launch" -> if (args.has("component")) VirtualScreenProgressGuard.Action("launch", args.optString("component")) else null
@@ -562,14 +565,18 @@ internal object VirtualScreenSession {
     private fun publishGesture(current: Session, args: JSONObject) {
         val action = args.optString("action")
         if (action !in setOf("tap", "long_press", "swipe")) return
-        val x = args.optInt(if (action == "swipe") "x1" else "x", -1)
-        val y = args.optInt(if (action == "swipe") "y1" else "y", -1)
-        val endX = if (action == "swipe") args.optInt("x2", -1) else x
-        val endY = if (action == "swipe") args.optInt("y2", -1) else y
-        if (x !in 0 until current.width || y !in 0 until current.height || endX !in 0 until current.width || endY !in 0 until current.height) return
+        val display = viewerState.value.display?.takeIf { it.sessionId == current.id } ?: return
+        val path = if (action == "swipe") runCatching {
+            SwipePath.parse(args).also { SwipePath.validate(it, display.width, display.height) }
+        }.getOrNull() ?: return else null
+        val x = path?.first()?.x ?: args.optInt("x", -1)
+        val y = path?.first()?.y ?: args.optInt("y", -1)
+        val endX = path?.last()?.x ?: x
+        val endY = path?.last()?.y ?: y
+        if (x !in 0 until display.width || y !in 0 until display.height || endX !in 0 until display.width || endY !in 0 until display.height) return
         viewerState.update { state -> state.copy(gesture = VirtualScreenGesture(
             gestureIds.incrementAndGet(), current.id, action, x, y, endX, endY,
-            args.optInt("durationMs", 500), SystemClock.elapsedRealtime(),
+            args.optInt("durationMs", 500), SystemClock.elapsedRealtime(), path,
         )) }
     }
 

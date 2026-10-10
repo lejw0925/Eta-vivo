@@ -61,8 +61,9 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
         val viewport = viewport() ?: return
         val start = viewport.toView(gesture.x, gesture.y)
         if (gesture.action == "swipe") {
-            val end = viewport.toView(gesture.endX, gesture.endY)
-            indicators.showSwipe(start.x, start.y, end.x, end.y, gesture.durationMs)
+            val points = gesture.path?.map { viewport.toView(it.x, it.y) }
+                ?: listOf(start, viewport.toView(gesture.endX, gesture.endY))
+            indicators.showSwipePath(points.map { android.graphics.PointF(it.x, it.y) }, gesture.durationMs)
         } else indicators.showPress(start.x, start.y, gesture.action == "long_press", gesture.durationMs)
     }
 

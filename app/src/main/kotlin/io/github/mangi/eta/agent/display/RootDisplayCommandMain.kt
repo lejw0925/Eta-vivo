@@ -21,6 +21,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.util.Base64
 import android.view.Display
+import io.github.mangi.eta.agent.device.SwipePath
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
@@ -39,6 +40,7 @@ internal object RootDisplayCommandMain {
         var wakeLock: PowerManager.WakeLock? = null
         var recoveryWakeLock: PowerManager.WakeLock? = null
         var rotationListener: VirtualScreenAppRotation? = null
+        var inputInjector: VirtualScreenInputInjector? = null
         try {
             require(Process.myUid() == 0) { "ROOT_REQUIRED" }
             if (Looper.myLooper() == null) Looper.prepareMainLooper()
@@ -90,7 +92,8 @@ internal object RootDisplayCommandMain {
             rotationListener = appRotation
             val localIme = configureLocalIme(id)
             val textInput = VirtualScreenRootTextInput(id)
-            val inputInjector = VirtualScreenInputInjector(id)
+            val displayInput = VirtualScreenInputInjector(id)
+            inputInjector = displayInput
             if (allowOff) {
                 wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Eta:virtual-task")
                     .apply { acquire() }
@@ -276,7 +279,7 @@ internal object RootDisplayCommandMain {
                         }
 
                         "tap" -> {
-                            inputInjector.execute(
+                            displayInput.execute(
                                 "tap",
                                 integer(request, "x", 0, logicalWidth - 1).toString(),
                                 integer(request, "y", 0, logicalHeight - 1).toString()
@@ -286,18 +289,16 @@ internal object RootDisplayCommandMain {
                         "text" -> textInput.insert(request.getString("text"), request.optBoolean("replace"))
 
                         "swipe" -> {
-                            inputInjector.execute(
-                                "swipe",
-                                integer(request, "x1", 0, logicalWidth - 1).toString(),
-                                integer(request, "y1", 0, logicalHeight - 1).toString(),
-                                integer(request, "x2", 0, logicalWidth - 1).toString(),
-                                integer(request, "y2", 0, logicalHeight - 1).toString(),
-                                integer(request, "durationMs", 100, 2000).toString()
-                            )
+                            val points = try {
+                                SwipePath.parse(request).also { SwipePath.validate(it, logicalWidth, logicalHeight) }
+                            } catch (_: IllegalArgumentException) {
+                                error("INVALID_PATH")
+                            }
+                            displayInput.executePath(points, integer(request, "durationMs", 100, 2000))
                         }
 
                         "back" -> {
-                            inputInjector.execute("keyevent", "4")
+                            displayInput.execute("keyevent", "4")
                         }
 
                         "key" -> {
@@ -320,14 +321,14 @@ internal object RootDisplayCommandMain {
                                 }
                                 else -> error("VIRTUAL_ACTION_UNSUPPORTED")
                             }
-                            if (code != null) inputInjector.execute("keyevent", code.toString())
+                            if (code != null) displayInput.execute("keyevent", code.toString())
                             else JSONObject().put("ok", true).put("displayId", id)
                         }
 
                         "long_press" -> {
                             val x = integer(request, "x", 0, logicalWidth - 1).toString()
                             val y = integer(request, "y", 0, logicalHeight - 1).toString()
-                            inputInjector.execute("swipe", x, y, x, y, integer(request, "durationMs", 300, 3000).toString())
+                            displayInput.execute("swipe", x, y, x, y, integer(request, "durationMs", 300, 3000).toString())
                         }
 
                         else -> failure("UNKNOWN_DISPLAY_ACTION")
@@ -352,6 +353,7 @@ internal object RootDisplayCommandMain {
         } catch (_: Exception) {
             reply(failure("ROOT_DISPLAY_UNAVAILABLE"))
         } finally {
+            runCatching { inputInjector?.close() }
             runCatching { rotationListener?.close() }
             runCatching { display?.release() }
             runCatching { capture?.close() }

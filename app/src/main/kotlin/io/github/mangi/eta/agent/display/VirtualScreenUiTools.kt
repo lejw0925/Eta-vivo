@@ -7,6 +7,7 @@ import android.os.SystemClock
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.ScrollDirection
 import io.github.mangi.eta.agent.device.ScrollAmount
+import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import io.github.mangi.eta.agent.tool.AgentAfterActionSummary
@@ -293,10 +294,18 @@ internal class VirtualScreenUiTools(
             }
 
             "swipe" -> {
-                val first = point("x1", "y1");
-                val second = point("x2", "y2")
-                action.put("x1", first.first).put("y1", first.second).put("x2", second.first)
-                    .put("y2", second.second)
+                val rawPoints = try {
+                    SwipePath.parse(args)
+                } catch (error: IllegalArgumentException) {
+                    return failure("INVALID_ARGUMENT", error.message ?: "无效的 swipe 路径")
+                }
+                val points = rawPoints.map {
+                    val (x, y) = coordinatePoint(it.x, it.y, args.optString("coordinate_space"), info.width, info.height)
+                    SwipePath.Point(x, y)
+                }
+                if (args.has("path")) action.put("path", SwipePath.toJson(points))
+                else action.put("x1", points.first().x).put("y1", points.first().y)
+                    .put("x2", points.last().x).put("y2", points.last().y)
             }
 
             "scroll" -> {
