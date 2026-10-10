@@ -226,7 +226,6 @@ internal fun ConversationPanePanel(
                                 onOpenNotifications, badgeCount = notificationCount)
                             PaneShortcut(MiuixIcons.Alarm, stringResource(R.string.automation_title), onOpenTasks)
                             PaneShortcut(MiuixIcons.Contacts, stringResource(R.string.sidebar_characters), onOpenCharacters)
-                            PaneShortcut(MiuixIcons.Lock, stringResource(R.string.sidebar_permissions), onOpenPermissions)
                             val expansionDescription = stringResource(
                                 if (moreExpanded) R.string.sidebar_more_expanded else R.string.sidebar_more_collapsed,
                             )
@@ -241,6 +240,7 @@ internal fun ConversationPanePanel(
                                     PaneShortcut(MiuixIcons.GridView, stringResource(R.string.ui_tool_ability_9f0f80), onOpenTools)
                                     PaneShortcut(MiuixIcons.Layers, stringResource(R.string.sidebar_models), onOpenModelProviders)
                                     PaneShortcut(MiuixIcons.Notes, stringResource(R.string.sidebar_skills), onOpenSkills)
+                                    PaneShortcut(MiuixIcons.Lock, stringResource(R.string.sidebar_permissions), onOpenPermissions)
                                 }
                             }
                         }
