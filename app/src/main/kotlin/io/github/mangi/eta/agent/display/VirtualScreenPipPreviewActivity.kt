@@ -54,7 +54,6 @@ internal class VirtualScreenPipPreviewActivity : ComponentActivity() {
             closeFromHost()
             return
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         surface = VirtualScreenSurfaceView(this).apply {
             touchEnabled = false
@@ -164,7 +163,7 @@ internal class VirtualScreenPipPreviewActivity : ComponentActivity() {
         openingViewer = true
         stopCapture()
         try {
-            startActivity(Intent(this, VirtualScreenViewerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            startActivity(VirtualScreenViewerActivity.newIntent(this),
                 ActivityOptions.makeBasic().apply { launchDisplayId = Display.DEFAULT_DISPLAY }.toBundle())
             controller?.openViewer(requestId)
         } catch (error: RuntimeException) {

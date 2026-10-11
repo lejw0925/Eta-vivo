@@ -22,7 +22,8 @@ class VirtualScreenNotificationTest {
         val notification = manager.activeNotifications.single().notification
         val intent = shadowOf(notification.contentIntent).savedIntent
         assertEquals(VirtualScreenViewerActivity::class.java.name, intent.component!!.className)
-        assertEquals("eta-virtual-screen://view/first", intent.dataString)
+        assertEquals("eta-virtual-screen://viewer", intent.dataString)
+        assertTrue(intent.flags and android.content.Intent.FLAG_ACTIVITY_NEW_DOCUMENT != 0)
         assertTrue(notification.contentIntent.isImmutable)
         VirtualScreenNotification.cancel(context, "first")
         VirtualScreenNotification.show(context, "second")

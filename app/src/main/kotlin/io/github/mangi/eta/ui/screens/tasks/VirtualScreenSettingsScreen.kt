@@ -101,7 +101,7 @@ internal fun VirtualScreenSettingsScreen(onBack: () -> Unit) {
                                 )
                             }
                             if (!value) {
-                                VirtualScreenSession.revokePermission()
+                                VirtualScreenSession.revokePermission(context)
                                 MainScreenFallbackApproval.cancelAll()
                             }
                         }
@@ -163,7 +163,7 @@ internal fun VirtualScreenSettingsScreen(onBack: () -> Unit) {
                     onCheckedChange = { value ->
                         scope.launch(Dispatchers.IO) {
                             SettingsDataStore.updateSettings { it.copy(virtualScreenOffEnabled = value) }
-                            if (!value) VirtualScreenSession.revokePermission()
+                            if (!value) VirtualScreenSession.revokePermission(context)
                         }
                     })
                 EtaPreferenceDivider(hasLeading = false)
@@ -208,12 +208,7 @@ internal fun VirtualScreenSettingsScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth()
                     .padding(horizontal = EtaPreferenceDefaults.SidePadding),
                 onClick = {
-                    context.startActivity(
-                        Intent(
-                            context,
-                            VirtualScreenViewerActivity::class.java
-                        )
-                    )
+                    context.startActivity(VirtualScreenViewerActivity.newIntent(context))
                 })
         }
     }

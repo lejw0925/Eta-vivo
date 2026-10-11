@@ -88,6 +88,12 @@ internal fun AgentOverlayCapsule(
     onStop: () -> Unit,
     onSupplementModeChange: (Boolean) -> Unit,
     onSupplement: (String) -> Unit,
+    headerModifier: Modifier = Modifier,
+    showRunControls: Boolean = true,
+    runControlsEnabled: Boolean = true,
+    containerModifier: Modifier = Modifier,
+    statusOverride: String? = null,
+    footer: (@Composable () -> Unit)? = null,
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
@@ -119,7 +125,7 @@ internal fun AgentOverlayCapsule(
     }
 
     val accent by animateColorAsState(overlayPhaseAccent(state.phase), tween(240), label = "capsule_accent")
-    val statusText = state.status.localizedText()
+    val statusText = statusOverride ?: state.status.localizedText()
     val expandDescription = stringResource(R.string.overlay_capsule_toggle, statusText)
     // 展开进度只驱动绘制层的透明度与位移，不参与测量；控制区用 AnimatedVisibility 只在两端各测一次。
     val expansion by animateFloatAsState(
@@ -138,6 +144,7 @@ internal fun AgentOverlayCapsule(
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             Column(
                 modifier = Modifier
+                    .then(containerModifier)
                     .padding(horizontal = 12.dp, vertical = 6.dp)
                     .width(CapsuleWidth)
                     .graphicsLayer {
@@ -150,9 +157,10 @@ internal fun AgentOverlayCapsule(
                     .clip(RoundedCornerShape(CapsuleCorner))
                     .background(MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.94f)),
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .then(headerModifier)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -160,30 +168,32 @@ internal fun AgentOverlayCapsule(
                         )
                         .semantics { contentDescription = expandDescription }
                         .padding(start = 12.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    PhaseIndicator(phase = state.phase, accent = accent)
-                    Spacer(Modifier.width(9.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                    AnimatedContent(
-                        targetState = statusText,
-                        transitionSpec = {
-                            (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
-                                (slideOutVertically(tween(180)) { -it / 2 } + fadeOut(tween(160))) using
-                                SizeTransform(clip = true) { _, _ -> snap() }
-                        },
-                        label = "capsule_status",
-                    ) { text ->
-                        Text(
-                            text = text,
-                            color = MiuixTheme.colorScheme.onSurface,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        PhaseIndicator(phase = state.phase, accent = accent)
+                        Spacer(Modifier.width(9.dp))
+                        AnimatedContent(
+                            modifier = Modifier.weight(1f),
+                            targetState = statusText,
+                            transitionSpec = {
+                                (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
+                                    (slideOutVertically(tween(180)) { -it / 2 } + fadeOut(tween(160))) using
+                                    SizeTransform(clip = true) { _, _ -> snap() }
+                            },
+                            label = "capsule_status",
+                        ) { text ->
+                            Text(
+                                text = text,
+                                color = MiuixTheme.colorScheme.onSurface,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
-                    ThoughtLine(thought = state.thought.takeIf { state.phase == AgentOverlayPhase.RUNNING }.orEmpty())
+                    Box(Modifier.padding(start = 23.dp)) {
+                        ThoughtLine(thought = state.thought.takeIf { state.phase == AgentOverlayPhase.RUNNING }.orEmpty())
                     }
                 }
 
@@ -209,7 +219,7 @@ internal fun AgentOverlayCapsule(
                                     if (text.isNotBlank()) leaveSupplementMode { onSupplement(text) }
                                 },
                             )
-                        } else {
+                        } else if (showRunControls) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
@@ -219,6 +229,7 @@ internal fun AgentOverlayCapsule(
                                     label = stringResource(R.string.overlay_supplement),
                                     tint = MiuixTheme.colorScheme.onSurface,
                                     onClick = { setSupplementMode(true) },
+                                    enabled = runControlsEnabled,
                                 )
                                 if (state.phase == AgentOverlayPhase.RUNNING) {
                                     CapsuleAction(
@@ -226,6 +237,7 @@ internal fun AgentOverlayCapsule(
                                         label = stringResource(R.string.overlay_pause),
                                         tint = MiuixTheme.colorScheme.onSurface,
                                         onClick = onPause,
+                                        enabled = runControlsEnabled,
                                     )
                                 } else if (state.phase == AgentOverlayPhase.PAUSED) {
                                     CapsuleAction(
@@ -240,9 +252,11 @@ internal fun AgentOverlayCapsule(
                                     label = stringResource(R.string.action_stop),
                                     tint = MiuixTheme.colorScheme.error,
                                     onClick = onStop,
+                                    enabled = runControlsEnabled,
                                 )
                             }
                         }
+                        footer?.invoke()
                     }
                 }
             }
@@ -327,9 +341,10 @@ private fun ThoughtLine(thought: String) {
 }
 
 @Composable
-private fun CapsuleAction(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+private fun CapsuleAction(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit, enabled: Boolean = true) {
     IconButton(
         onClick = onClick,
+        enabled = enabled,
         backgroundColor = MiuixTheme.colorScheme.surfaceContainerHigh,
         minWidth = 40.dp,
         minHeight = 34.dp,

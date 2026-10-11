@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.device
 
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -109,6 +110,65 @@ class RootInputInjectorTest {
             assertTrue(cancelled.await(2, TimeUnit.SECONDS))
         }
         assertEquals(listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_CANCEL), actions.toList())
+    }
+
+    @Test
+    fun manualTakeoverCancelsOldGestureBeforeNewDownAndOldFinallyCannotCancelNewPointer() {
+        val actions = CopyOnWriteArrayList<Int>()
+        val paused = CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicReference<org.json.JSONObject>()
+        RootInputInjector(96, dispatch = { input, _ -> actions += (input as MotionEvent).action; true },
+            pause = { paused.countDown(); CountDownLatch(1).await() }).use { injector ->
+            val worker = Thread { result.set(injector.executePath(path, 500)) }.apply { start() }
+            assertTrue(paused.await(2, TimeUnit.SECONDS))
+            assertTrue(injector.cancelActive())
+            val down = MotionEvent.obtain(2000, 2000, MotionEvent.ACTION_DOWN, 40f, 50f, 0)
+            try { assertTrue(injector.injectRealtime(down)) } finally { down.recycle() }
+            worker.join(2000)
+            assertEquals("UI_MANUAL_CONTROL", result.get().getString("code"))
+            assertEquals(listOf(MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_DOWN), actions.takeLast(2))
+            assertEquals(2, actions.count { it == MotionEvent.ACTION_DOWN })
+            assertEquals(1, actions.count { it == MotionEvent.ACTION_CANCEL })
+            assertFalse(actions.contains(MotionEvent.ACTION_UP))
+        }
+    }
+
+    @Test
+    fun manualTakeoverReleasesAnInFlightKeyBeforeTouch() {
+        val keyDown = CountDownLatch(1)
+        val ticks = java.util.concurrent.atomic.AtomicInteger()
+        val actions = CopyOnWriteArrayList<String>()
+        RootInputInjector(96, dispatch = { input, _ ->
+            actions += if (input is KeyEvent) "key:${input.action}" else "touch:${(input as MotionEvent).action}"
+            true
+        }, uptimeMillis = {
+            if (ticks.incrementAndGet() == 2) { keyDown.countDown(); CountDownLatch(1).await() }
+            1000
+        }).use { injector ->
+            val worker = Thread { injector.execute("keyevent", "4") }.apply { start() }
+            assertTrue(keyDown.await(2, TimeUnit.SECONDS))
+            assertTrue(injector.cancelActive())
+            val down = MotionEvent.obtain(2000, 2000, MotionEvent.ACTION_DOWN, 40f, 50f, 0)
+            try { injector.injectRealtime(down) } finally { down.recycle() }
+            worker.join(2000)
+            assertEquals(listOf("key:0", "key:1", "touch:0"), actions.toList())
+        }
+    }
+
+    @Test
+    fun busyDispatchDoesNotAllowAManualGestureToOverlap() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        RootInputInjector(96, dispatch = { input, _ ->
+            if ((input as MotionEvent).action == MotionEvent.ACTION_DOWN) { entered.countDown(); release.await() }
+            true
+        }).use { injector ->
+            val worker = Thread { injector.execute("tap", "20", "20") }.apply { start() }
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertFalse(injector.cancelActive(10))
+            release.countDown()
+            worker.join(2000)
+        }
     }
 
     @Test

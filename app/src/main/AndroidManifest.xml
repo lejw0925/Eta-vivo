@@ -77,6 +77,12 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- OriginOS otherwise filters separate document tasks from the same app. -->
+            <meta-data android:name="enable_multi_task" android:value="true" />
+            <intent-filter>
+                <action android:name="vivo.action.recents.ENABLE_MULTI_TASK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <activity
@@ -94,8 +100,12 @@
         </activity>
         <receiver android:name=".agent.display.MainScreenFallbackReceiver" android:exported="false" />
         <activity android:name=".agent.display.VirtualScreenViewerActivity" android:exported="false"
-            android:label="@string/virtual_screen_title" android:theme="@style/Theme.Eta"
+            android:launchMode="standard" android:documentLaunchMode="intoExisting" android:autoRemoveFromRecents="false"
+            android:taskAffinity="${applicationId}.virtualscreen.viewer"
+            android:label="@string/virtual_screen_title" android:theme="@style/Theme.EtaVirtualScreen"
             android:windowSoftInputMode="adjustResize" />
+        <provider android:name=".agent.display.VirtualScreenBridgeProvider" android:exported="false"
+            android:authorities="${applicationId}.virtualscreen.bridge" />
         <activity android:name=".agent.display.VirtualScreenPipPreviewActivity" android:exported="false"
             android:launchMode="singleTask"
             android:excludeFromRecents="true" android:supportsPictureInPicture="true"

@@ -1521,4 +1521,9 @@
     <string name="virtual_screen_pip_permission_summary">在系統設定中允許 Eta 使用子母畫面。</string>
     <string name="chat_interject_hint">輸入訊息，即時插話調整目前工作…</string>
     <string name="chat_interject_unavailable">尚未確認目前工作收到插話，已保留草稿；請確認工作狀態後再傳送。</string>
+    <string name="virtual_screen_controls">螢幕控制</string>
+    <string name="virtual_screen_exit_viewer">離開檢視</string>
+    <string name="virtual_screen_close">關閉虛擬螢幕</string>
+    <string name="virtual_screen_operation_dispatched">已派發，效果待確認</string>
+    <string name="virtual_screen_compatibility_preview">相容預覽：10 幀，放手後執行手勢。可重新開啟以重試即時顯示。</string>
 </resources>

@@ -9,6 +9,12 @@ import android.view.MotionEvent
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.CancellationException
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.hypot
 import org.json.JSONObject
 
@@ -28,6 +34,35 @@ internal class RootInputInjector(
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "eta-display-input").apply { isDaemon = true }
     }
+    private val injectionLock = ReentrantLock(true)
+    private val generation = AtomicLong()
+    private val actionGeneration = ThreadLocal<Long>()
+    private val activeFuture = AtomicReference<Future<Boolean>?>()
+    private var activeTouch: MotionEvent? = null
+    private var activeKey: KeyEvent? = null
+
+    /** A manual gesture can preempt between dispatched events, never in the middle of dispatch. */
+    fun cancelActive(timeoutMs: Long = 100): Boolean {
+        if (!injectionLock.tryLock(timeoutMs, TimeUnit.MILLISECONDS)) return false
+        try {
+            generation.incrementAndGet()
+            activeFuture.getAndSet(null)?.cancel(true)
+            val touchReleased = activeTouch?.let { event ->
+                event.action = MotionEvent.ACTION_CANCEL
+                runCatching { dispatchEvent(event, false) }.getOrDefault(false).also { released ->
+                    if (released) { event.recycle(); activeTouch = null }
+                }
+            } ?: true
+            val keyReleased = activeKey?.let { event ->
+                val up = KeyEvent(event.downTime, uptimeMillis(), KeyEvent.ACTION_UP, event.keyCode, 0,
+                    event.metaState, event.deviceId, event.scanCode, event.flags, event.source)
+                runCatching { dispatchEvent(up, false) }.getOrDefault(false).also { if (it) activeKey = null }
+            } ?: true
+            return touchReleased && keyReleased
+        } finally { injectionLock.unlock() }
+    }
+
+    fun injectRealtime(event: MotionEvent): Boolean = injectionLock.withLock { dispatchEvent(event, false) }
 
     fun execute(vararg args: String): JSONObject = executeInput {
         when (args[0]) {
@@ -50,7 +85,12 @@ internal class RootInputInjector(
 
     private fun executeInput(action: () -> Boolean): JSONObject {
         val started = SystemClock.elapsedRealtime()
-        val future = executor.submit<Boolean> { action() }
+        val epoch = generation.get()
+        val future = executor.submit<Boolean> {
+            actionGeneration.set(epoch)
+            try { if (epoch == generation.get()) action() else false } finally { actionGeneration.remove() }
+        }
+        activeFuture.set(future)
         val finished = try {
             future.get(inputTimeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
@@ -59,11 +99,16 @@ internal class RootInputInjector(
                 .put("message", "输入未在时限内完成，动作可能已经执行；请重新观察当前应用状态。")
                 .put("effect", "unconfirmed").put("input_finished", false)
                 .put("input_elapsed_ms", SystemClock.elapsedRealtime() - started)
+        } catch (_: CancellationException) {
+            return JSONObject().put("ok", false).put("code", "UI_MANUAL_CONTROL")
+                .put("effect", "unconfirmed").put("input_finished", false)
         } catch (failure: InterruptedException) {
             future.cancel(true)
             Thread.currentThread().interrupt()
             throw failure
-        }
+        } finally { activeFuture.compareAndSet(future, null) }
+        if (epoch != generation.get()) return JSONObject().put("ok", false).put("code", "UI_MANUAL_CONTROL")
+            .put("effect", "unconfirmed").put("input_finished", false)
         return JSONObject().put("ok", finished).put("displayId", displayId)
             .put("input_finished", finished).put("input_elapsed_ms", SystemClock.elapsedRealtime() - started)
             .put("effect", "unconfirmed").apply {
@@ -140,6 +185,19 @@ internal class RootInputInjector(
 
     @SuppressLint("BlockedPrivateApi")
     private fun inject(event: InputEvent, wait: Boolean = true): Boolean {
+        return injectionLock.withLock {
+            if (actionGeneration.get()?.let { it != generation.get() } == true) return@withLock false
+            if (event is MotionEvent) {
+                activeTouch?.recycle()
+                activeTouch = if (event.actionMasked in setOf(MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL)) null else MotionEvent.obtain(event)
+            }
+            if (event is KeyEvent) activeKey = if (event.action == KeyEvent.ACTION_UP) null else KeyEvent(event)
+            dispatchEvent(event, wait)
+        }
+    }
+
+    @SuppressLint("BlockedPrivateApi")
+    private fun dispatchEvent(event: InputEvent, wait: Boolean): Boolean {
         dispatch?.let { return it(event, wait) }
         InputEvent::class.java.getDeclaredMethod("setDisplayId", Int::class.javaPrimitiveType).invoke(event, displayId)
         if (event is KeyEvent) event.source = InputDevice.SOURCE_KEYBOARD
@@ -151,6 +209,7 @@ internal class RootInputInjector(
     }
 
     override fun close() {
+        runCatching { cancelActive() }
         executor.shutdownNow()
         try {
             executor.awaitTermination(200, TimeUnit.MILLISECONDS)

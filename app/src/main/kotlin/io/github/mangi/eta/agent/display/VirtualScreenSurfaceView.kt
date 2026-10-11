@@ -60,6 +60,10 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
         lastGesture = 0L
     }
 
+    fun canStartGesture(display: VirtualDisplayInfo, x: Float, y: Float): Boolean =
+        bitmap?.isRecycled == false && info?.sessionId == display.sessionId &&
+            info?.hasSameGeometry(display) == true && viewport()?.toDisplay(x, y) != null
+
     fun showGesture(gesture: VirtualScreenGesture?) {
         val display = info ?: return
         if (gesture == null || gesture.id == lastGesture || gesture.sessionId != display.sessionId) return

@@ -25,7 +25,8 @@ public class DisplayProbeActivity extends Activity {
         super.onCreate(savedInstanceState);
         state = getSharedPreferences("display_probe", MODE_PRIVATE);
         state.edit().clear().putInt("display", getDisplay().getDisplayId()).putInt("taps", 0)
-            .putInt("longPresses", 0).putString("text", "").apply();
+            .putInt("longPresses", 0).putString("text", "")
+            .putString("intentUri", getIntent().getDataString() == null ? "" : getIntent().getDataString()).apply();
         if (getIntent().getData() != null && "swipe-path".equals(getIntent().getData().getHost())) {
             if (getActionBar() != null) getActionBar().hide();
             View canvas = new View(this) {
@@ -123,6 +124,7 @@ public class DisplayProbeActivity extends Activity {
         EditText editor = new EditText(this);
         editor.setHint("Unicode input");
         content.addView(editor, new LinearLayout.LayoutParams(-1, 180));
+        editor.setOnFocusChangeListener((view, focused) -> state.edit().putBoolean("editorFocused", focused).apply());
         editor.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             public void onTextChanged(CharSequence s, int start, int before, int count) {
@@ -194,6 +196,8 @@ public class DisplayProbeActivity extends Activity {
             Point size = new Point();
             getDisplay().getRealSize(size);
             state.edit().putInt("orientation", getResources().getConfiguration().orientation)
+                .putBoolean("windowFocused", hasWindowFocus())
+                .putBoolean("editorFocused", editor.hasFocus())
                 .putInt("displayWidth", size.x).putInt("displayHeight", size.y)
                 .putInt("layoutWidth", scroll.getWidth()).putInt("layoutHeight", scroll.getHeight()).apply();
         });

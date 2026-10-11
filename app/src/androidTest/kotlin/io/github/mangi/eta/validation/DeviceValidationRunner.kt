@@ -55,6 +55,7 @@ class DeviceValidationRunner : Instrumentation() {
     private var mode = "core"
     private var screenOffValidation = false
     private var restoreTimeout: Int? = null
+    private var steadySeconds = 15
     private lateinit var automation: UiAutomation
 
     override fun onCreate(arguments: Bundle?) {
@@ -62,6 +63,7 @@ class DeviceValidationRunner : Instrumentation() {
         mode = arguments?.getString("mode") ?: "core"
         screenOffValidation = arguments?.getString("screen_off") == "true"
         restoreTimeout = arguments?.getString("idle_timeout")?.toIntOrNull()
+        steadySeconds = arguments?.getString("steady_seconds")?.toIntOrNull()?.coerceIn(15, 600) ?: 15
         start()
     }
 
@@ -108,6 +110,9 @@ class DeviceValidationRunner : Instrumentation() {
             .put("idle_timeout", original.virtualScreenIdleTimeoutMinutes).toString())
         val output = Bundle()
         var resultCode = Activity.RESULT_OK
+        val freezeViewerRotation = mode in setOf("realtime", "realtime_input", "manual_path", "pip", "viewer_ime", "viewer_recents")
+        val originalAutoRotate = android.provider.Settings.System.getInt(targetContext.contentResolver, android.provider.Settings.System.ACCELEROMETER_ROTATION, 1)
+        val originalUserRotation = android.provider.Settings.System.getInt(targetContext.contentResolver, android.provider.Settings.System.USER_ROTATION, 0)
         try {
             runBlocking { RootAccess.request(targetContext).join() }
             verify("root permission", RootAccess.isGranted)
@@ -116,13 +121,28 @@ class DeviceValidationRunner : Instrumentation() {
                 flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             }
             automation.adoptShellPermissionIdentity("android.permission.QUERY_ALL_PACKAGES")
+            cancelInjectedHostPointer()
+            if (freezeViewerRotation) { automation.setRotation(UiAutomation.ROTATION_FREEZE_0); SystemClock.sleep(400) }
             if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery", "stop_resume", "stop_resume_baseline",
-                "pip", "manual_path", "feature_ui", "interjection")) connectEnabledAccessibilityService()
+                "pip", "manual_path", "realtime", "realtime_input", "viewer_ime", "viewer_recents", "process_seed", "process_live_seed", "process_resume", "feature_ui", "interjection")) connectEnabledAccessibilityService()
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true,
                 virtualScreenFallbackEnabled = false, virtualScreenAutoRestartApps = false,
                 virtualScreenOffEnabled = mode in setOf("recovery", "landscape", "frames", "frame_recovery") || original.virtualScreenOffEnabled,
                 virtualScreenIdleTimeoutMinutes = 0) } }
             when (mode) {
+                "process_seed", "process_live_seed", "process_resume" -> DeviceSessionRecoveryValidation(this, { tools(it) }) {
+                    checks += it
+                    sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
+                }.let { if (mode == "process_resume") it.resume() else it.seed(holdForDeath = mode == "process_live_seed") }
+                "viewer_ime", "viewer_recents" -> DeviceViewerImeValidation(this, automation, { tools(it) }) {
+                    checks += it
+                    sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
+                }.run(recentsOnly = mode == "viewer_recents")
+                "realtime", "realtime_input" -> DeviceRealtimeValidation(this, automation, { tools(it) }, steadySeconds,
+                    inputOnly = mode == "realtime_input") {
+                    checks += it
+                    sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
+                }.run()
                 "wechat" -> validateWechat()
                 "stall" -> validateStallProtection()
                 "recovery", "frame_recovery" -> validateUiRecovery()
@@ -167,12 +187,34 @@ class DeviceValidationRunner : Instrumentation() {
                 output.putBoolean("keyguard_locked", targetContext.getSystemService(KeyguardManager::class.java).isKeyguardLocked)
             }
         } finally {
-            VirtualScreenSession.revokePermission()
+            // A user may replace the synthetic display during a long run. Never
+            // close that replacement as part of test cleanup.
+            VirtualScreenSession.closeOwner("device-validation")
+            if (mode != "process_seed") io.github.mangi.eta.agent.display.VirtualScreenResumeStore(targetContext).forget("device-validation")
             runBlocking { SettingsDataStore.updateSettings { original } }
             settingsBackup.delete()
-            if (::automation.isInitialized) automation.dropShellPermissionIdentity()
+            if (::automation.isInitialized) {
+                cancelInjectedHostPointer()
+                if (freezeViewerRotation) {
+                    automation.setRotation(originalUserRotation)
+                    if (originalAutoRotate != 0) automation.setRotation(UiAutomation.ROTATION_UNFREEZE)
+                }
+                automation.dropShellPermissionIdentity()
+            }
         }
         finish(resultCode, output)
+    }
+
+    private fun cancelInjectedHostPointer() {
+        // Finishing a window does not clear InputDispatcher's injection verifier.
+        // This only closes the synthetic pointer on display 0, never a hardware touch.
+        val now = SystemClock.uptimeMillis()
+        val event = android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            .apply { source = android.view.InputDevice.SOURCE_TOUCHSCREEN }
+        try {
+            org.lsposed.hiddenapibypass.HiddenApiBypass.invoke(android.view.InputEvent::class.java, event, "setDisplayId", Display.DEFAULT_DISPLAY)
+            runCatching { automation.injectInputEvent(event, false) }
+        } finally { event.recycle() }
     }
 
     private fun tools(run: String = "device-validation", approval: MainScreenFallbackDecision = MainScreenFallbackDecision.RESTART_VIRTUAL) =
@@ -204,7 +246,7 @@ class DeviceValidationRunner : Instrumentation() {
         verify("stop keeps same session", VirtualScreenSession.state.value.display?.sessionId == sessionId)
         tools("retention-resume").use { resumed ->
             val stale = call(resumed, "tap", JSONObject().put("x", 1).put("y", 1).put("coordinate_space", "screen"))
-            verify("resumed run requires fresh observation", !stale.optBoolean("ok") && stale.optString("code") == "NO_OBSERVATION")
+            verify("resumed run requires fresh observation", !stale.optBoolean("ok") && stale.optString("code") == "VIRTUAL_OBSERVATION_REQUIRED")
             val observed = ok("resume observes retained app", call(resumed, "observe_screen", JSONObject().put("include_screenshot", true)))
             verify("resume preserves display and application", VirtualScreenSession.state.value.display?.sessionId == sessionId &&
                 observed.getJSONObject("focus").optString("package") == context.packageName)

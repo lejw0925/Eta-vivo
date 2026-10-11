@@ -60,6 +60,8 @@ import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.darkColorScheme
@@ -111,6 +113,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             get() = holder.value
             set(next) {
                 holder.value = next
+                viewerOverlayState.value = next
                 AgentExecutionService.updateRunStatus(
                     this@AgentRuntimeService,
                     next.status.takeIf { activeSession?.isTerminal == false },
@@ -130,6 +133,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onCreate() {
         super.onCreate()
+        viewerService = this
         islandBridge = AgentRuntimeIslandBridge(this, AndroidAgentLogger, ::cancelRun)
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
@@ -159,6 +163,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     override fun onDestroy() {
+        if (viewerService === this) viewerService = null
         // 经验复盘由自己的执行引用持有；文字任务关闭入口服务后仍可完成。
         startRequestGeneration++
         pendingStartRequest?.let { pending ->
@@ -1263,7 +1268,37 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         )
     }
 
-    private companion object {
+    companion object {
+        @Volatile
+        private var viewerService: AgentRuntimeService? = null
+        private val viewerOverlayState = MutableStateFlow(AgentOverlayState.Initial)
+        val viewerOverlay = viewerOverlayState.asStateFlow()
+
+        fun pauseVirtualScreen(runId: String?) {
+            val service = viewerService ?: return
+            val session = service.activeSession?.takeIf { it.runId == runId && !it.isTerminal } ?: return
+            session.controller.pause()
+            service.mainHandler.post { if (service.activeSession === session) service.requestPause() }
+        }
+
+        fun resumeVirtualScreen(runId: String?) {
+            val service = viewerService ?: return
+            val session = service.activeSession?.takeIf { it.runId == runId && !it.isTerminal } ?: return
+            service.mainHandler.post { if (service.activeSession === session) service.requestResume() }
+        }
+
+        fun stopVirtualScreen(runId: String?) {
+            if (runId == null) return
+            val service = viewerService ?: return
+            service.mainHandler.post { if (service.activeSession?.runId == runId) service.requestStop() }
+        }
+
+        fun supplementVirtualScreen(runId: String?, text: String) {
+            val service = viewerService ?: return
+            if (runId == null) return
+            service.mainHandler.post { service.requestSupplement(text, runId) }
+        }
+
         const val ACTION_KEEP_ALIVE = "io.github.mangi.eta.agent.runtime.KEEP_ALIVE"
         const val HIDE_DELAY_MS = 2_500L
         const val RESULT_REVIEW_DELAY_MS = 120_000L

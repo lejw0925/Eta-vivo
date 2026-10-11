@@ -106,7 +106,7 @@ class MainActivity : ComponentActivity() {
             )?.takeIf(String::isNotBlank)
             intent.action = null
             if (VirtualScreenSession.isActive()) {
-                startActivity(Intent(this, VirtualScreenViewerActivity::class.java))
+                startActivity(VirtualScreenViewerActivity.newIntent(this))
             }
             return
         }

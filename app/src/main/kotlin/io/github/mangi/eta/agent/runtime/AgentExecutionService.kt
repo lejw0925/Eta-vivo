@@ -101,7 +101,9 @@ internal class AgentExecutionService : Service() {
     private fun notification(): Notification {
         val status = runStatus
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, if (io.github.mangi.eta.agent.display.VirtualScreenSession.isActive()) io.github.mangi.eta.agent.display.VirtualScreenViewerActivity::class.java else MainActivity::class.java),
+            this, 0, if (io.github.mangi.eta.agent.display.VirtualScreenSession.isActive())
+                io.github.mangi.eta.agent.display.VirtualScreenViewerActivity.newIntent(this)
+            else Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val stop = PendingIntent.getService(

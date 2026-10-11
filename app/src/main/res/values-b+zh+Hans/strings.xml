@@ -1547,4 +1547,9 @@
     <string name="virtual_screen_pip_permission_summary">在系统设置中允许 Eta 使用画中画。</string>
     <string name="chat_interject_hint">输入消息，实时插话调整当前任务…</string>
     <string name="chat_interject_unavailable">尚未确认当前任务收到插话，已保留草稿；请确认任务状态后再发送。</string>
+    <string name="virtual_screen_controls">屏幕控制</string>
+    <string name="virtual_screen_exit_viewer">退出查看</string>
+    <string name="virtual_screen_close">关闭虚拟屏</string>
+    <string name="virtual_screen_operation_dispatched">已派发，效果待确认</string>
+    <string name="virtual_screen_compatibility_preview">兼容预览：10 帧，松手后执行手势。可重新打开以重试实时显示。</string>
 </resources>

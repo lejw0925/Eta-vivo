@@ -41,6 +41,8 @@ internal object RootDisplayCommandMain {
         var recoveryWakeLock: PowerManager.WakeLock? = null
         var rotationListener: VirtualScreenAppRotation? = null
         var inputInjector: VirtualScreenInputInjector? = null
+        var realtimeBridge: RootVirtualScreenBridge? = null
+        var motionStream: RootMotionStream? = null
         try {
             require(Process.myUid() == 0) { "ROOT_REQUIRED" }
             if (Looper.myLooper() == null) Looper.prepareMainLooper()
@@ -94,6 +96,20 @@ internal object RootDisplayCommandMain {
             val textInput = VirtualScreenRootTextInput(id)
             val displayInput = VirtualScreenInputInjector(id)
             inputInjector = displayInput
+            val bridgeToken = setup.optString("bridgeToken")
+            val etaUid = setup.optInt("etaUid")
+            if (bridgeToken.length >= 32 && etaUid == context.packageManager.getPackageUid("io.github.mangi.eta", 0)) {
+                val liveInput = RootMotionStream(displayInput,
+                    allowed = { displayManager.getDisplay(id) != null && power.isInteractive && !keyguard.isDeviceLocked },
+                    onActivity = { idleTimer.touch() },
+                    onFailure = { code -> realtimeBridge?.reportFailure(code) },
+                    onDispatched = { action -> realtimeBridge?.reportDispatched(action) },
+                )
+                motionStream = liveInput
+                realtimeBridge = RootVirtualScreenBridge(context, display.display, handler, setup.getString("sessionId"),
+                    bridgeToken, etaUid, onMotion = { _, info, gesture, event -> liveInput.enqueue(info, gesture, event) },
+                    onCancel = liveInput::cancel, onResume = liveInput::resume, onTakeover = liveInput::takeover)
+            }
             if (allowOff) {
                 wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Eta:virtual-task")
                     .apply { acquire() }
@@ -126,6 +142,8 @@ internal object RootDisplayCommandMain {
                     }
                     require(displayManager.getDisplay(id) != null) { "DISPLAY_GONE" }
                     require(allowOff || (power.isInteractive && !keyguard.isDeviceLocked)) { "SCREEN_OFF_PERMISSION_REQUIRED" }
+                    require(motionStream?.isManualControl != true || request.optBoolean("manual") ||
+                        request.optString("action") in setOf("observe", "probe", "tasks", "lifecycle")) { "UI_MANUAL_CONTROL" }
                     appRotation.synchronize(runningTasks().firstOrNull { taskDisplayId(it) == id })
                     val size = Point().also { display.display.getRealSize(it) }
                     val logicalWidth = size.x
@@ -148,6 +166,7 @@ internal object RootDisplayCommandMain {
                                 .put("width", logicalWidth).put("height", logicalHeight).put("rotation", rotation)
                                 .put("refreshRate", display.display.refreshRate)
                                 .put("capture", frameStore.describe())
+                                .put("realtime", realtimeBridge?.describe() ?: JSONObject.NULL)
                                 .put("packageName", top?.packageName.orEmpty())
                                 .put("activity", top?.className.orEmpty()).apply {
                                     frameStore.currentFrame()?.let { frame ->
@@ -353,6 +372,8 @@ internal object RootDisplayCommandMain {
         } catch (_: Exception) {
             reply(failure("ROOT_DISPLAY_UNAVAILABLE"))
         } finally {
+            runCatching { realtimeBridge?.close() }
+            runCatching { motionStream?.close() }
             runCatching { inputInjector?.close() }
             runCatching { rotationListener?.close() }
             runCatching { display?.release() }

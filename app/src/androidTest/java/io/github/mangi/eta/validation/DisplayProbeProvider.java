@@ -12,7 +12,7 @@ import org.json.JSONObject;
 public class DisplayProbeProvider extends ContentProvider {
     @Override public boolean onCreate() { return true; }
     @Override public Cursor query(Uri uri, String[] projection, String selection, String[] args, String sort) {
-        SharedPreferences state = getContext().getSharedPreferences("display_probe", Context.MODE_PRIVATE);
+        SharedPreferences state = getContext().getSharedPreferences("realtime".equals(uri.getLastPathSegment()) ? "realtime_probe" : "display_probe", Context.MODE_PRIVATE);
         MatrixCursor result = new MatrixCursor(new String[] { "state" });
         result.addRow(new Object[] { new JSONObject(state.getAll()).toString() });
         return result;

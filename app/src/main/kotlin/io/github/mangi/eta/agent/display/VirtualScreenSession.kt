@@ -3,11 +3,14 @@ package io.github.mangi.eta.agent.display
 import android.content.Context
 import android.util.Base64
 import android.os.SystemClock
+import android.os.Bundle
+import android.os.IBinder
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import io.github.mangi.eta.agent.device.RootAccess
 import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentExecutionService
+import io.github.mangi.eta.agent.runtime.AgentRuntimeService
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -37,6 +40,10 @@ internal object VirtualScreenSession {
     private val session = AtomicReference<Session?>()
     private val viewerState = MutableStateFlow(VirtualScreenViewerState())
     val state = viewerState.asStateFlow()
+    private val rootBridgeState = MutableStateFlow<VirtualScreenRootBridge?>(null)
+    val rootBridge = rootBridgeState.asStateFlow()
+    private val bridgeErrorState = MutableStateFlow<String?>(null)
+    val bridgeError = bridgeErrorState.asStateFlow()
     private val viewerVisibility = VirtualScreenViewerVisibility()
     private val previewUpdates = Executors.newSingleThreadExecutor { r ->
         Thread(r, "eta-display-preview").apply { isDaemon = true }
@@ -61,8 +68,12 @@ internal object VirtualScreenSession {
         runId: String?,
     ) {
         val id = UUID.randomUUID().toString()
+        val bridgeToken = UUID.randomUUID().toString()
         var displayId: Int = -1
         val closed = AtomicBoolean()
+        val controlLock = Any()
+        val manualControl = AtomicBoolean()
+        val needsObservation = AtomicBoolean()
         val runLease = VirtualScreenRunLease(runId)
         var progressGuard = VirtualScreenProgressGuard()
         var progressDecision: VirtualScreenProgressGuard.Decision? = null
@@ -72,6 +83,9 @@ internal object VirtualScreenSession {
         fun close() {
             if (!closed.compareAndSet(false, true)) return
             session.compareAndSet(this, null)
+            rootBridgeState.update { bridge ->
+                if (bridge?.sessionId == id) { bridge.close(); null } else bridge
+            }
             viewerState.update {
                 if (it.display?.sessionId != id) it else it.copy(
                     display = null, gesture = null, activeRunId = null,
@@ -97,26 +111,38 @@ internal object VirtualScreenSession {
     } == true
 
     /** Idle displays may be replaced by another conversation; an executing run keeps exclusive ownership. */
-    fun prepareForRun(owner: String, runId: String): Boolean = synchronized(lock) {
-        val current = session.get() ?: return@synchronized true
+    fun prepareForRun(owner: String, runId: String): Boolean = synchronized(lock) prepare@ {
+        val current = session.get() ?: return@prepare true
         if (current.closed.get() || !current.process.isAlive) {
             current.close()
-            return@synchronized true
+            return@prepare true
         }
         if (current.owner == owner) {
             val acquired = current.runLease.acquire(runId)
             if (acquired && viewerState.value.activeRunId != runId) {
+                val generation = synchronized(current.controlLock) { viewerState.value.display?.manualInputGeneration }
+                if (runCatching { rootBridgeState.value?.takeIf { it.sessionId == current.id }?.resume() }.isFailure) {
+                    current.runLease.release(runId, retain = true)
+                    return@prepare false
+                }
+                synchronized(current.controlLock) {
+                    if (viewerState.value.display?.manualInputGeneration != generation) {
+                        current.runLease.release(runId, retain = true)
+                        return@prepare false
+                    }
+                    current.manualControl.set(false)
+                    viewerState.update { if (it.display?.sessionId == current.id) it.beginRun(runId) else it }
+                }
                 current.progressGuard = VirtualScreenProgressGuard()
                 current.progressDecision = null
                 current.stop = null
                 current.pausedPackageName = ""
                 current.pausedManualGeneration = -1L
-                viewerState.update { if (it.display?.sessionId == current.id) it.beginRun(runId) else it }
                 updateIdleTimeout()
             }
-            return@synchronized acquired
+            return@prepare acquired
         }
-        if (!current.runLease.retireIdle()) return@synchronized false
+        if (!current.runLease.retireIdle()) return@prepare false
         current.close()
         true
     }
@@ -158,14 +184,69 @@ internal object VirtualScreenSession {
                 val current = session.get() ?: return@synchronized
                 if (current.closed.get() || !current.process.isAlive) return@synchronized
                 execute(current.context, current.owner, JSONObject().put("action", "preview")
-                    .put("visible", viewerVisibility.visible), manual = true)
+                    .put("visible", viewerVisibility.captureVisible), manual = true)
             }
         }
     }
 
-    fun recordOperation(owner: String, runId: String?, name: String, success: Boolean, manual: Boolean = false) {
+    fun setViewerCapture(viewerId: String, capture: Boolean) {
+        if (!viewerVisibility.setCapture(viewerId, capture)) return
+        previewUpdates.execute {
+            synchronized(lock) {
+                val current = session.get() ?: return@synchronized
+                if (!current.closed.get()) execute(current.context, current.owner, JSONObject().put("action", "preview")
+                    .put("visible", viewerVisibility.captureVisible), manual = true)
+            }
+        }
+    }
+
+    fun beginManualGesture(viewerId: String, info: VirtualDisplayInfo): Boolean {
+        val current = session.get()?.takeIf { it.id == info.sessionId && !it.closed.get() } ?: return false
+        synchronized(current.controlLock) {
+            if (session.get() !== current || !viewerVisibility.isCurrent(viewerId) || viewerState.value.display?.hasSameGeometry(info) != true) return false
+            current.manualControl.set(true)
+            current.needsObservation.set(true)
+            bridgeErrorState.value = null
+            viewerState.update { state ->
+                if (state.display?.sessionId != current.id) state else state.copy(
+                    display = state.display.copy(manualInputGeneration = state.display.manualInputGeneration + 1),
+                    manualControl = true,
+                    taskPhase = if (state.activeRunId != null) VirtualScreenTaskPhase.PAUSED else state.taskPhase,
+                )
+            }
+        }
+        AgentRuntimeService.pauseVirtualScreen(viewerState.value.activeRunId)
+        return true
+    }
+
+    fun resumeFromViewer(sessionId: String, resumeRuntime: Boolean = true): Boolean {
+        val current = session.get()?.takeIf { it.id == sessionId && !it.closed.get() } ?: return false
+        val generation = synchronized(current.controlLock) { viewerState.value.display?.manualInputGeneration }
+        rootBridgeState.value?.takeIf { it.sessionId == sessionId }?.resume()
+        synchronized(current.controlLock) {
+            if (session.get() !== current || current.closed.get() || viewerState.value.display?.manualInputGeneration != generation) return false
+            current.manualControl.set(false)
+            viewerState.update { state -> if (state.display?.sessionId != sessionId) state else state.copy(
+                manualControl = false, taskPhase = if (state.activeRunId != null) VirtualScreenTaskPhase.RUNNING else state.taskPhase,
+            ) }
+        }
+        bridgeErrorState.value = null
+        if (resumeRuntime) AgentRuntimeService.resumeVirtualScreen(viewerState.value.activeRunId)
+        return true
+    }
+
+    fun markModelObservation(info: VirtualDisplayInfo) {
+        val current = session.get()?.takeIf { it.id == info.sessionId } ?: return
+        synchronized(current.controlLock) {
+            if (!current.manualControl.get() && viewerState.value.display?.manualInputGeneration == info.manualInputGeneration) {
+                current.needsObservation.set(false)
+            }
+        }
+    }
+
+    fun recordOperation(owner: String, runId: String?, name: String, success: Boolean, manual: Boolean = false, unconfirmed: Boolean = false) {
         val current = session.get()?.takeIf { it.owner == owner && !it.closed.get() } ?: return
-        val operation = VirtualScreenOperation(operationIds.incrementAndGet(), name, System.currentTimeMillis(), success, manual)
+        val operation = VirtualScreenOperation(operationIds.incrementAndGet(), name, System.currentTimeMillis(), success, manual, unconfirmed)
         viewerState.update {
             if (it.display?.sessionId != current.id || runId != null && it.activeRunId != runId) it else it.record(operation)
         }
@@ -182,6 +263,11 @@ internal object VirtualScreenSession {
     ): AgentModelClient.ToolResult = synchronized(lock) {
         try {
             check(!isCancelled()) { "DISPLAY_CANCELLED" }
+            if (args.optString("action") == "close" && !isActive()) {
+                VirtualScreenResumeStore(context).forget(owner)
+                session.get()?.takeIf { it.owner == owner }?.close()
+                return@synchronized AgentModelClient.ToolResult("{\"ok\":true,\"closed\":true}")
+            }
             require(android.os.Build.VERSION.SDK_INT >= 34) { "DEVICE_UNSUPPORTED" }
             val settings = runBlocking { SettingsDataStore.settings() }
             require(settings.virtualScreenEnabled) { "VIRTUAL_SCREEN_DISABLED" }
@@ -237,6 +323,8 @@ internal object VirtualScreenSession {
                         JSONObject().put("action", "create").put("width", width)
                             .put("height", height).put("density", density)
                             .put("sessionId", current.id)
+                            .put("bridgeToken", current.bridgeToken)
+                            .put("etaUid", context.applicationInfo.uid)
                             .put("idleTimeoutMinutes", settings.virtualScreenIdleTimeoutMinutes)
                             .put("activeRun", runId != null)
                             .put("allowScreenOff", allowOff).toString()
@@ -275,11 +363,13 @@ internal object VirtualScreenSession {
                 checkUiAction(context, owner, args)?.let { return@synchronized it }
             }
             val packet = JSONObject(args.toString())
+            packet.put("manual", manual)
             if (action in setOf("tap", "swipe", "long_press") && !packet.has("expectedWidth")) {
                 viewerState.value.display?.let { info ->
                     packet.put("expectedWidth", info.width).put("expectedHeight", info.height).put("expectedRotation", info.rotation)
                 }
             }
+            val observation = viewerState.value.display
             val timeout = deadlines.schedule({ current.close() }, 15, TimeUnit.SECONDS)
             val result = try {
                 publishGesture(current, args)
@@ -302,10 +392,15 @@ internal object VirtualScreenSession {
                     state.copy(display = next, gesture = state.gesture.takeIf { info.hasSameGeometry(next) })
                 }
             }
+            if (!manual && action == "observe" && result.optBoolean("ok") && observation != null) markModelObservation(observation)
             if (action !in setOf("observe", "probe", "preview", "lifecycle")) {
                 viewerState.update { it.copy(lastAction = action) }
             }
+            if (result.optBoolean("ok") && action in setOf("launch", "restart")) {
+                VirtualScreenResumeStore(context).remember(owner, result.optString("component"))
+            }
             if (action == "close") {
+                VirtualScreenResumeStore(context).forget(owner)
                 current.close(); session.compareAndSet(current, null)
             }
             val encoded = result.optString("image")
@@ -354,12 +449,49 @@ internal object VirtualScreenSession {
             .put("preview", viewerId != null), manual = true)
     }
 
-    fun inputForViewer(context: Context, sessionId: String, args: JSONObject): AgentModelClient.ToolResult = synchronized(lock) {
+    /** Registration cannot wait for the JSON create response, which holds the tool lock. */
+    fun registerRootBridge(sessionId: String, token: String, remote: IBinder): IBinder {
+        val current = requireNotNull(session.get()?.takeIf { it.id == sessionId && it.bridgeToken == token && !it.closed.get() }) {
+            "DISPLAY_OWNER_MISMATCH"
+        }
+        val holder = AtomicReference<VirtualScreenRootBridge?>()
+        val bridge = VirtualScreenRootBridge(sessionId, token, remote,
+            onGeometry = { geometry -> updateBridgeGeometry(current, geometry) },
+            onFailure = { code -> if (session.get() === current) bridgeErrorState.value = code },
+            onDispatched = { action -> if (session.get() === current) recordOperation(current.owner, null, action,
+                success = true, manual = true, unconfirmed = true) },
+            onDeath = { rootBridgeState.update { if (it === holder.get()) null else it } },
+        )
+        holder.set(bridge)
+        if (session.get() !== current || current.closed.get() || !bridge.isAlive) { bridge.close(); error("DISPLAY_GONE") }
+        rootBridgeState.value?.close()
+        bridgeErrorState.value = null
+        rootBridgeState.value = bridge
+        return bridge.callback
+    }
+
+    private fun updateBridgeGeometry(current: Session, geometry: Bundle) {
+        if (session.get() !== current || current.closed.get()) return
+        if (current.displayId > 0 && geometry.getInt("displayId") != current.displayId) return
+        val width = geometry.getInt("width")
+        val height = geometry.getInt("height")
+        val rotation = geometry.getInt("rotation")
+        if (width <= 0 || height <= 0 || rotation !in 0..3) return
+        viewerState.update { state ->
+            val info = state.display?.takeIf { it.sessionId == current.id } ?: return@update state
+            val next = info.withGeometry(width, height, rotation)
+            state.copy(display = next, gesture = state.gesture.takeIf { info.hasSameGeometry(next) })
+        }
+    }
+
+    fun inputForViewer(context: Context, sessionId: String, args: JSONObject, viewerId: String? = null,
+        generationPrepared: Boolean = false): AgentModelClient.ToolResult = synchronized(lock) {
+        if (viewerId != null && !viewerVisibility.isCurrent(viewerId)) return@synchronized failure("VIEWER_HIDDEN")
         val current = session.get()
         if (current == null || current.id != sessionId || args.optString("action") !in setOf("tap", "swipe", "long_press", "back", "key", "switch_task", "text")) {
             return@synchronized failure("STALE_VIRTUAL_SCREEN")
         }
-        viewerState.update { state -> state.copy(display = state.display?.let {
+        if (!generationPrepared) viewerState.update { state -> state.copy(display = state.display?.let {
             it.copy(manualInputGeneration = it.manualInputGeneration + 1)
         }) }
         // Manual input is outside the model budget, and its generation starts a new evidence scope.
@@ -377,6 +509,8 @@ internal object VirtualScreenSession {
     /** Called for both Root input and accessibility node actions while the display lock is held. */
     fun checkUiAction(context: Context, owner: String, args: JSONObject): AgentModelClient.ToolResult? = synchronized(lock) {
         val current = session.get()?.takeIf { it.owner == owner } ?: return@synchronized failure("NO_VIRTUAL_SCREEN")
+        if (current.manualControl.get()) return@synchronized failure("UI_MANUAL_CONTROL")
+        if (current.needsObservation.get()) return@synchronized failure("STALE_OBSERVATION")
         current.stop?.let { return@synchronized pausedResult(current, it) }
         val action = progressAction(args) ?: return@synchronized null
         val (evidence, failure) = progressEvidence(context, current)
@@ -590,8 +724,10 @@ internal object VirtualScreenSession {
         }
     }
 
-    fun revokePermission() {
-        session.getAndSet(null)?.close()
+    fun revokePermission(context: Context? = null) {
+        val current = session.getAndSet(null)
+        (context ?: current?.context)?.let { VirtualScreenResumeStore(it).clear() }
+        current?.close()
     }
 
     private fun readResponse(output: BufferedReader): JSONObject {

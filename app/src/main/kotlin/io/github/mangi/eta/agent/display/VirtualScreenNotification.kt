@@ -5,9 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
@@ -25,9 +23,7 @@ internal object VirtualScreenNotification {
                 CHANNEL, context.getString(R.string.virtual_screen_notification_channel), NotificationManager.IMPORTANCE_LOW,
             ))
             val open = PendingIntent.getActivity(context, 0,
-                Intent(context, VirtualScreenViewerActivity::class.java)
-                    .setData(Uri.parse("eta-virtual-screen://view/$sessionId"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                VirtualScreenViewerActivity.newIntent(context),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
             manager.notify(sessionId, ID, Notification.Builder(context, CHANNEL)

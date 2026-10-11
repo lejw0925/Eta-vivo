@@ -11,6 +11,14 @@
         <item name="android:windowLightNavigationBar">true</item>
     </style>
 
+    <style name="Theme.EtaVirtualScreen" parent="Theme.Eta">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
     <style name="Theme.EtaVoiceAssistBridge" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowIsTranslucent">true</item>

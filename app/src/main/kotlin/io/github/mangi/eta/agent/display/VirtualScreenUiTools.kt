@@ -31,6 +31,8 @@ internal class VirtualScreenUiTools(
     private var observedSession: String? = null
     private var observedManualGeneration = -1L
     private var clipboard = ""
+    private var recreatedSession: String? = null
+    private var restoreComponent: String? = null
     private val uiTreeAvailability = VirtualScreenUiTreeAvailability(SystemClock::elapsedRealtime)
     val uiTreeUnavailable: Boolean get() =
         uiTreeAvailability.unavailableFor(VirtualScreenSession.state.value.display)
@@ -61,12 +63,51 @@ internal class VirtualScreenUiTools(
             else -> withDisplay { info -> dispatch(name, args, info) }
         }
         if (name in AFTER_ACTION_TOOLS) afterAction(result, before) else result
-    } catch (error: Exception) {
-        failure(
-            if (error is IllegalArgumentException || error is IllegalStateException) error.message
-                ?: "VIRTUAL_UI_FAILED" else "VIRTUAL_UI_FAILED",
-            "虚拟屏操作未完成；请重新观察，不会回退到主屏。"
-        )
+    } catch (error: Exception) { executionFailure(error) }
+
+    private fun executionFailure(error: Exception): AgentModelClient.ToolResult {
+        val code = if (error is IllegalArgumentException || error is IllegalStateException)
+            error.message ?: "VIRTUAL_UI_FAILED" else "VIRTUAL_UI_FAILED"
+        if (code !in setOf("NO_OBSERVATION", "STALE_OBSERVATION"))
+            return failure(code, "虚拟屏操作未完成；请重新观察，不会回退到主屏。")
+        val json = JSONObject().put("ok", false)
+            .put("code", if (code == "NO_OBSERVATION") "VIRTUAL_OBSERVATION_REQUIRED" else code)
+            .put("requires_observation", true).put("next_tool", "observe_screen")
+            .put("action_executed", false)
+            .put("message", "当前虚拟屏缺少有效观察，刚才的动作未执行。立即调用 observe_screen 获取应用画面和状态，再依据新观察继续；先核对此前未确认的效果，不要直接重放旧点击或提交。")
+        VirtualScreenSession.state.value.display?.let {
+            json.put("display_id", it.displayId).put("session_id", it.sessionId).put("display_active", VirtualScreenSession.isOwnedBy(owner))
+        }
+        return withRecovery(AgentModelClient.ToolResult(json.toString(), sensitive = true))
+    }
+
+    /** Lifecycle observations also recover after process death; stale raw actions are not replayed. */
+    fun executeDisplayCommand(args: JSONObject): AgentModelClient.ToolResult = try {
+        val action = args.optString("action")
+        if (action !in setOf("observe", "probe", "tasks", "launch", "tap", "swipe", "long_press", "text", "key", "back")) {
+            VirtualScreenSession.execute(context, owner, args, isCancelled, runId)
+        } else withDisplay(restorePrevious = action != "launch") { info ->
+            if (action == "launch") invalidateObservation()
+            if (action in setOf("tap", "swipe", "long_press", "text", "key", "back") && recreatedSession == info.sessionId)
+                requireFreshObservation(info)
+            val result = VirtualScreenSession.execute(context, owner, args, isCancelled, runId)
+            if (action == "observe" && JSONObject(result.content).optBoolean("ok")) {
+                observedSession = info.sessionId
+                observedManualGeneration = info.manualInputGeneration
+            }
+            withRecovery(result)
+        }
+    } catch (error: Exception) { executionFailure(error) }
+
+    private fun withRecovery(result: AgentModelClient.ToolResult): AgentModelClient.ToolResult {
+        val info = VirtualScreenSession.state.value.display ?: return result
+        if (recreatedSession == null || recreatedSession != info.sessionId) return result
+        val json = JSONObject(result.content).put("recovery", JSONObject()
+            .put("session_recreated", true).put("previous_observation_valid", false)
+            .put("app_component", restoreComponent ?: JSONObject.NULL)
+            .put("app_restored", restoreComponent != null && info.focusedPackage == restoreComponent?.substringBefore('/'))
+            .put("note", "虚拟屏会话已重新创建，旧应用界面状态可能丢失；以新观察核对进度，未重放此前操作。"))
+        return result.copy(content = json.toString())
     }
 
     /** One action returns a new handle, or one image when this window cannot expose a tree. */
@@ -107,7 +148,7 @@ internal class VirtualScreenUiTools(
     }
 
     fun launchComponent(component: String, uri: String = ""): AgentModelClient.ToolResult =
-        withDisplay {
+        withDisplay(restorePrevious = false) {
             invalidateObservation()
             VirtualScreenSession.execute(
                 context, owner, JSONObject().put("action", "launch")
@@ -115,7 +156,7 @@ internal class VirtualScreenUiTools(
             )
         }
 
-    private fun withDisplay(block: (VirtualDisplayInfo) -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
+    private fun withDisplay(restorePrevious: Boolean = true, block: (VirtualDisplayInfo) -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
         check(!isCancelled()) { "DISPLAY_CANCELLED" }
         val settings = runBlocking { SettingsDataStore.settings() }
         require(settings.virtualScreenEnabled) { "VIRTUAL_SCREEN_DISABLED" }
@@ -126,10 +167,18 @@ internal class VirtualScreenUiTools(
                     .put("allowScreenOff", settings.virtualScreenOffEnabled), isCancelled, runId
             )
             if (!JSONObject(created.content).optBoolean("ok")) return created
+            recreatedSession = VirtualScreenSession.state.value.display?.sessionId
+            restoreComponent = if (restorePrevious) VirtualScreenResumeStore(context).component(owner) else null
+            restoreComponent?.let { component ->
+                invalidateObservation()
+                val restored = VirtualScreenSession.execute(context, owner,
+                    JSONObject().put("action", "launch").put("component", component), isCancelled)
+                if (!JSONObject(restored.content).optBoolean("ok")) return withRecovery(restored)
+            }
         }
         return VirtualScreenSession.withDisplay(context, owner, isCancelled) { info ->
             uiTreeAvailability.updateScope(info)
-            block(info)
+            withRecovery(block(info))
         }
     }
 
@@ -258,7 +307,15 @@ internal class VirtualScreenUiTools(
         )
         if (capture != null && !JSONObject(capture.content).optBoolean("ok")) {
             json.put("screenshot_error", JSONObject(capture.content).optString("code"))
-            if (nodes == null) return capture
+            if (nodes == null) {
+                val needsApp = info.focusedPackage.isBlank() && restoreComponent == null
+                json.put("ok", false).put("code", JSONObject(capture.content).optString("code"))
+                    .put("requires_observation", true).put("requires_app_launch", needsApp)
+                    .put("next_tool", if (needsApp) "launch_app" else "observe_screen")
+                    .put("message", if (needsApp) "虚拟屏已创建，当前没有应用画面；先用 launch_app 打开原任务的目标应用，再 observe_screen 获取新观察。"
+                        else "虚拟屏已创建或恢复，应用画面暂未就绪；有界等待后重新 observe_screen，不要重放旧操作。")
+                return AgentModelClient.ToolResult(json.toString(), sensitive = true)
+            }
         }
         if (capture == null) VirtualScreenSession.checkUiObservation(context, owner)?.let { return it }
         val latest = VirtualScreenSession.state.value.display
@@ -268,6 +325,7 @@ internal class VirtualScreenUiTools(
         snapshot = nodes
         observedSession = info.sessionId
         observedManualGeneration = info.manualInputGeneration
+        VirtualScreenSession.markModelObservation(info)
         return AgentModelClient.ToolResult(json.toString(), images, sensitive = true)
     }
 

@@ -1567,4 +1567,9 @@
     <string name="virtual_screen_pip_permission_summary">Allow Eta to use picture-in-picture in system settings.</string>
     <string name="chat_interject_hint">Add a message to redirect the current task…</string>
     <string name="chat_interject_unavailable">Receipt of this message was not confirmed. Your draft is kept; check the task before sending again.</string>
+    <string name="virtual_screen_controls">Screen controls</string>
+    <string name="virtual_screen_exit_viewer">Exit viewer</string>
+    <string name="virtual_screen_close">Close virtual screen</string>
+    <string name="virtual_screen_operation_dispatched">Dispatched; effect unconfirmed</string>
+    <string name="virtual_screen_compatibility_preview">Compatibility preview: 10fps; gestures run after release. Reopen to retry live view.</string>
 </resources>

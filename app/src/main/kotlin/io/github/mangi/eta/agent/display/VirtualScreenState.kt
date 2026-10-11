@@ -43,10 +43,11 @@ internal data class VirtualScreenViewerState(
     val activeRunId: String? = null,
     val operations: List<VirtualScreenOperation> = emptyList(),
     val fullViewerVisible: Boolean = false,
+    val manualControl: Boolean = false,
 ) {
-    val isAgentControlling: Boolean get() = display != null && taskPhase == VirtualScreenTaskPhase.RUNNING
+    val isAgentControlling: Boolean get() = display != null && taskPhase == VirtualScreenTaskPhase.RUNNING && !manualControl
 
-    fun beginRun(runId: String) = copy(taskPhase = VirtualScreenTaskPhase.RUNNING, activeRunId = runId)
+    fun beginRun(runId: String) = copy(taskPhase = VirtualScreenTaskPhase.RUNNING, activeRunId = runId, manualControl = false)
 
     fun finishRun(runId: String, success: Boolean, cancelled: Boolean, paused: Boolean = false): VirtualScreenViewerState =
         if (activeRunId != runId) this else copy(
@@ -68,4 +69,5 @@ internal data class VirtualScreenOperation(
     val timestamp: Long,
     val success: Boolean,
     val manual: Boolean,
+    val unconfirmed: Boolean = false,
 )

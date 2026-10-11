@@ -187,12 +187,12 @@ internal class AgentTaskJobService : JobService() {
         title: String,
         progress: String,
     ): Notification {
-        val target =
-            if (VirtualScreenSession.isActive()) VirtualScreenViewerActivity::class.java else MainActivity::class.java
+        val intent = if (VirtualScreenSession.isActive()) VirtualScreenViewerActivity.newIntent(this)
+            else Intent(this, MainActivity::class.java)
         val open = PendingIntent.getActivity(
             this,
             NOTIFICATION_ID,
-            Intent(this, target),
+            intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_notification)

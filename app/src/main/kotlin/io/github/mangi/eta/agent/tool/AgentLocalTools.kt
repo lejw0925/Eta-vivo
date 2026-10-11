@@ -345,7 +345,7 @@ internal class AgentLocalTools(
             when (toolCall.name) {
                 "virtual_screen" -> if (virtualRouting.usesPrimary) textResult(errorResult("MAIN_SCREEN_ROUTE_ACTIVE", "本次任务已获准改用主屏，请使用普通 UI 工具并重新观察"))
                     else if (!VirtualScreenSession.prepareForRun(virtualScreenOwner, browserRunId)) textResult(errorResult("DISPLAY_BUSY", "虚拟屏正被其他任务使用"))
-                    else VirtualScreenSession.execute(context, virtualScreenOwner, args, closed::get, browserRunId).let { result ->
+                    else virtualUiTools.executeDisplayCommand(args).let { result ->
                         if (args.optString("action") == "close") result else handleVirtualResult(toolCall.name, result)
                     }
                 in AgentTaskTools.names -> AgentModelClient.ToolResult(AgentTaskTools(context).execute(toolCall.name, args), sensitive = true)

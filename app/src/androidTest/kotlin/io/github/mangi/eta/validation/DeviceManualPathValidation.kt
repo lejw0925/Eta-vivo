@@ -15,7 +15,7 @@ import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.display.VirtualDisplayInfo
 import io.github.mangi.eta.agent.display.VirtualScreenPipPreviewController
 import io.github.mangi.eta.agent.display.VirtualScreenSession
-import io.github.mangi.eta.agent.display.VirtualScreenSurfaceView
+import io.github.mangi.eta.agent.display.VirtualScreenDisplayView
 import io.github.mangi.eta.agent.display.VirtualScreenViewerActivity
 import io.github.mangi.eta.agent.display.VirtualScreenViewport
 import io.github.mangi.eta.agent.model.AgentModelClient
@@ -46,6 +46,12 @@ internal class DeviceManualPathValidation(
             call(tools, "create manual path display", JSONObject().put("action", "create"))
             for ((name, activity) in listOf("portrait" to DisplayProbeActivity::class.java,
                 "landscape" to LandscapeProbeActivity::class.java)) {
+                if (VirtualScreenSession.state.value.manualControl) {
+                    val current = checkNotNull(VirtualScreenSession.state.value.display)
+                    verify("continue before next fixture", VirtualScreenSession.resumeFromViewer(current.sessionId))
+                    verify("fresh observation before next fixture", JSONObject(VirtualScreenSession.execute(context, current.owner,
+                        JSONObject().put("action", "observe")).content).optBoolean("ok"))
+                }
                 call(tools, "launch $name path fixture", JSONObject().put("action", "launch")
                     .put("component", "io.github.mangi.eta.test/${activity.name}").put("uri", "eta-validation://swipe-path"))
                 eventually("$name fixture geometry ready") {
@@ -58,14 +64,14 @@ internal class DeviceManualPathValidation(
                         state.optInt("displayWidth") == display.width && state.optInt("displayHeight") == display.height &&
                         (name != "landscape" || display.width > display.height)
                 }
-                val viewer = instrumentation.startActivitySync(Intent(context, VirtualScreenViewerActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle())
+                val viewer = instrumentation.startActivitySync(VirtualScreenViewerActivity.newIntent(context),
+                    ActivityOptions.makeBasic().setLaunchDisplayId(Display.DEFAULT_DISPLAY).toBundle())
                     as VirtualScreenViewerActivity
                 try {
                     eventually("$name viewer receives a current frame") {
                         main { findSurface(viewer.window.decorView)?.let { view ->
                             val frame = view.javaClass.getDeclaredField("info").apply { isAccessible = true }.get(view) as? VirtualDisplayInfo
-                            frame != null && frame.hasSameGeometry(checkNotNull(VirtualScreenSession.state.value.display)) &&
+                            view.isLive && frame != null && frame.hasSameGeometry(checkNotNull(VirtualScreenSession.state.value.display)) &&
                                 view.width > 0 && view.height > 0
                         } == true }
                     }
@@ -73,7 +79,7 @@ internal class DeviceManualPathValidation(
                     val display = checkNotNull(VirtualScreenSession.state.value.display)
                     val view = checkNotNull(main { findSurface(viewer.window.decorView) })
                     val viewport = main { checkNotNull(VirtualScreenViewport.fit(view.width, view.height, display.width, display.height)) }
-                    verify("$name viewer rotation matches display", viewport.rotatesClockwise == (name == "landscape"))
+                    verify("$name viewer rotation matches display", viewport.rotatesClockwise == (name == "landscape" && view.height > view.width))
                     val rectangle = listOf(
                         SwipePath.Point(display.width / 4, display.height / 3),
                         SwipePath.Point(display.width * 3 / 4, display.height / 3),
@@ -107,20 +113,23 @@ internal class DeviceManualPathValidation(
                     verifyStroke("$name reversal", reversal, 3)
                     verify("$name cancelled host input delivered", stroke(view, viewport, rectangle.take(3), cancel = true))
                     SystemClock.sleep(500)
-                    verify("$name cancelled path sends no virtual touch", probe().optInt("gestures") == 3)
+                    verify("$name cancelled path reaches app as cancellation", probe().optInt("gestures") == 4 &&
+                        JSONArray(probe().getString("touchEvents")).let { events ->
+                            events.getJSONObject(events.length() - 1).getInt("action") == MotionEvent.ACTION_CANCEL
+                        })
                 } finally { instrumentation.runOnMainSync { viewer.finish() } }
             }
             call(tools, "close manual path display", JSONObject().put("action", "close"))
         }
     }
 
-    private fun findSurface(view: View): VirtualScreenSurfaceView? {
-        if (view is VirtualScreenSurfaceView) return view
+    private fun findSurface(view: View): VirtualScreenDisplayView? {
+        if (view is VirtualScreenDisplayView) return view
         if (view is ViewGroup) for (index in 0 until view.childCount) findSurface(view.getChildAt(index))?.let { return it }
         return null
     }
 
-    private fun stroke(view: VirtualScreenSurfaceView, viewport: VirtualScreenViewport, points: List<SwipePath.Point>,
+    private fun stroke(view: VirtualScreenDisplayView, viewport: VirtualScreenViewport, points: List<SwipePath.Point>,
         stepMs: Long = 12, cancel: Boolean = false): Boolean {
         val location = IntArray(2).also { main { view.getLocationOnScreen(it) } }
         val start = SystemClock.uptimeMillis()
@@ -136,7 +145,9 @@ internal class DeviceManualPathValidation(
                 mapped.x + location[0], mapped.y + location[1], 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
             try {
                 HiddenApiBypass.invoke(android.view.InputEvent::class.java, event, "setDisplayId", Display.DEFAULT_DISPLAY)
-                accepted = automation.injectInputEvent(event, true) && accepted
+                val delivered = automation.injectInputEvent(event, true)
+                if (!delivered) record("METRIC host_input_failed index=$index action=$action view=${main { view.width }}x${main { view.height }} viewport=$viewport")
+                accepted = delivered && accepted
             } finally { event.recycle() }
             if (index != points.lastIndex) SystemClock.sleep(stepMs)
         }

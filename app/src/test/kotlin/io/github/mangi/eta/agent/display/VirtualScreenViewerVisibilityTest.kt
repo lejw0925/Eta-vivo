@@ -6,6 +6,22 @@ import org.junit.Test
 
 class VirtualScreenViewerVisibilityTest {
     @Test
+    fun liveLayerDoesNotLeaseJpegAndStaleViewerCannotChangeCapture() {
+        val visibility = VirtualScreenViewerVisibility()
+        visibility.show("live")
+        assertTrue(visibility.setCapture("live", false))
+        assertTrue(visibility.visible)
+        assertFalse(visibility.captureVisible)
+        visibility.showPreview("pip")
+        assertTrue(visibility.captureVisible)
+        visibility.hidePreview("pip")
+        assertFalse(visibility.captureVisible)
+        visibility.show("replacement")
+        assertFalse(visibility.setCapture("live", false))
+        assertTrue(visibility.captureVisible)
+    }
+
+    @Test
     fun fullViewerAndFloatingPreviewReleaseOnlyTheirOwnCaptureLease() {
         val visibility = VirtualScreenViewerVisibility()
         visibility.showPreview("preview")

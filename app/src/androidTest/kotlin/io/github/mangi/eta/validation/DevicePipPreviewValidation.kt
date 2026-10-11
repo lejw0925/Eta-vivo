@@ -62,7 +62,7 @@ internal class DevicePipPreviewValidation(
             eventually("native PiP decodes live frames", { lastFrame() > 0 })
             eventually("native PiP activates capture lease", { capture().optBoolean("viewer_visible") })
             val preview = checkNotNull(activity())
-            verify("native preview retains secure flag", main { preview.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE != 0 })
+            verify("native preview permits screenshots by default", main { preview.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE == 0 })
             val etaTask = foregroundEtaTaskId()
             verify("native preview owns independent task", etaTask >= 0 && main { preview.taskId != etaTask })
             verify("preview does not claim interactive viewer", !VirtualScreenSession.state.value.fullViewerVisible)
@@ -101,8 +101,12 @@ internal class DevicePipPreviewValidation(
                 .performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK))
             eventually("expanding PiP opens interactive viewer", { VirtualScreenSession.state.value.fullViewerVisible })
             eventually("full viewer removes native preview", { activity() == null })
-            eventually("full viewer retains capture lease", { capture().optBoolean("viewer_visible") })
-            verify("full viewer can return", automation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
+            eventually("full viewer releases JPEG capture lease", { !capture().optBoolean("viewer_visible") })
+            verify("PiP expansion does not pause the task", !VirtualScreenSession.state.value.manualControl &&
+                VirtualScreenSession.state.value.isAgentControlling)
+            verify("full viewer exit action is available", clickDescription(context.getString(io.github.mangi.eta.R.string.virtual_screen_controls)))
+            eventually("viewer exit control is available", { descriptionNode(context.getString(io.github.mangi.eta.R.string.virtual_screen_exit_viewer)) != null })
+            verify("full viewer can exit", clickDescription(context.getString(io.github.mangi.eta.R.string.virtual_screen_exit_viewer)))
             awaitPip()
 
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = false) } }
@@ -135,8 +139,7 @@ internal class DevicePipPreviewValidation(
     }
 
     private fun validateSettings() {
-        val viewer = instrumentation.startActivitySync(Intent(context, VirtualScreenViewerActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), ActivityOptions.makeBasic().setLaunchDisplayId(0).toBundle()) as VirtualScreenViewerActivity
+        val viewer = instrumentation.startActivitySync(VirtualScreenViewerActivity.newIntent(context), ActivityOptions.makeBasic().setLaunchDisplayId(0).toBundle()) as VirtualScreenViewerActivity
         try {
             instrumentation.runOnMainSync {
                 viewer.setContent { AgentAppTheme(AppearanceSettings(), applyInterfaceScale = true) {
@@ -151,7 +154,6 @@ internal class DevicePipPreviewValidation(
             verify("preview can be enabled from UI", clickText(title))
             eventually("enabled preview persists from UI", { runBlocking { SettingsDataStore.settings() }.virtualScreenPreviewEnabled })
             SystemClock.sleep(500)
-            instrumentation.runOnMainSync { viewer.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
             SystemClock.sleep(200)
             val image = checkNotNull(automation.takeScreenshot())
             try {
@@ -164,7 +166,7 @@ internal class DevicePipPreviewValidation(
                 } finally { crop.recycle() }
             } finally { image.recycle() }
         } finally {
-            instrumentation.runOnMainSync { viewer.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE); viewer.finish() }
+            instrumentation.runOnMainSync { viewer.finish() }
         }
     }
 
@@ -237,6 +239,23 @@ internal class DevicePipPreviewValidation(
     private fun capture() = JSONObject(VirtualScreenSession.execute(context, "device-validation",
         JSONObject().put("action", "probe"), manual = true).content).getJSONObject("capture")
 
+    private fun descriptionNode(text: String): android.view.accessibility.AccessibilityNodeInfo? {
+        fun find(node: android.view.accessibility.AccessibilityNodeInfo): android.view.accessibility.AccessibilityNodeInfo? {
+            if (node.contentDescription?.toString()?.contains(text) == true) return node
+            for (index in 0 until node.childCount) node.getChild(index)?.let { find(it)?.let { found -> return found } }
+            return null
+        }
+        return automation.rootInActiveWindow?.let(::find)
+    }
+
+    private fun clickDescription(text: String): Boolean = descriptionNode(text)?.let { node ->
+        // The label may belong to the icon/semantics child rather than its clickable parent.
+        var clickable: AccessibilityNodeInfo? = node
+        while (clickable != null && !clickable.isClickable) clickable = clickable.parent
+        if (clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true) true
+        else Rect().also(node::getBoundsInScreen).let { tap(it.centerX().toFloat(), it.centerY().toFloat()) }
+    } ?: false
+
     private fun assertIdle(label: String) {
         val count = capture().getLong("encoded_frames")
         SystemClock.sleep(500)
@@ -292,25 +311,19 @@ internal class DevicePipPreviewValidation(
     }
 
     private fun screenshot(name: String) {
-        // Temporarily unsecure only the synthetic fixture preview; crop out every other window.
-        val preview = checkNotNull(activity())
+        // Crop the synthetic fixture preview without changing production screenshot flags.
+        SystemClock.sleep(250)
+        val image = checkNotNull(automation.takeScreenshot())
         try {
-            instrumentation.runOnMainSync { preview.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
-            SystemClock.sleep(250)
-            val image = checkNotNull(automation.takeScreenshot())
+            val area = bounds()
+            check(area.intersect(0, 0, image.width, image.height)) {
+                "PiP fixture bounds $area do not intersect ${image.width}x${image.height}"
+            }
+            val crop = Bitmap.createBitmap(image, area.left, area.top, area.width(), area.height())
             try {
-                val area = bounds()
-                check(area.intersect(0, 0, image.width, image.height)) {
-                    "PiP fixture bounds $area do not intersect ${image.width}x${image.height}"
-                }
-                val crop = Bitmap.createBitmap(image, area.left, area.top, area.width(), area.height())
-                try {
-                    val directory = File(context.getExternalFilesDir(null), "validation").apply { mkdirs() }
-                    File(directory, name).outputStream().use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                } finally { crop.recycle() }
-            } finally { image.recycle() }
-        } finally {
-            instrumentation.runOnMainSync { preview.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE) }
-        }
+                val directory = File(context.getExternalFilesDir(null), "validation").apply { mkdirs() }
+                File(directory, name).outputStream().use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            } finally { crop.recycle() }
+        } finally { image.recycle() }
     }
 }
