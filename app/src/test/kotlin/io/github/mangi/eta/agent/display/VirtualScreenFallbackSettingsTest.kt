@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.display
 
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.Settings
+import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +16,23 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class VirtualScreenFallbackSettingsTest {
+    @Test
+    fun previewModePreservesLegacyDefaultAndRoundTripsWithoutChangingEnablement() = runBlocking {
+        assertEquals(VirtualScreenPreviewMode.FLOATING, Settings().virtualScreenPreviewMode)
+        assertEquals(VirtualScreenPreviewMode.FLOATING, VirtualScreenPreviewMode.fromPersistedValue(null))
+        assertEquals(VirtualScreenPreviewMode.FLOATING, VirtualScreenPreviewMode.fromPersistedValue("future-mode"))
+        SettingsDataStore.init(RuntimeEnvironment.getApplication())
+        val original = SettingsDataStore.settings()
+        try {
+            for (mode in VirtualScreenPreviewMode.entries) {
+                SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewMode = mode) }
+                val updated = SettingsDataStore.settings()
+                assertEquals(mode, updated.virtualScreenPreviewMode)
+                assertEquals(original, updated.copy(virtualScreenPreviewMode = original.virtualScreenPreviewMode))
+            }
+        } finally { SettingsDataStore.updateSettings { original } }
+    }
+
     @Test
     fun restartAndIdleSettingsPersistWithConservativeDefaults() = runBlocking {
         assertFalse(Settings().virtualScreenAutoRestartApps)

@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.display
 
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
+import android.app.AppOpsManager
 import android.app.ActivityOptions
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -29,6 +30,7 @@ import android.widget.TextView
 import io.github.mangi.eta.R
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
+import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import io.github.mangi.eta.data.model.Settings as EtaSettings
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -56,6 +58,8 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
     private val viewerId = "preview-${UUID.randomUUID()}"
     private var settings = EtaSettings()
     private var state = VirtualScreenViewerState()
+    private val pip = VirtualScreenPipPreviewController(context, scope) { scope.launch { render() } }
+    private var pipLaunch: Job? = null
     private var root: FrameLayout? = null
     private var surface: VirtualScreenSurfaceView? = null
     private var expanded: View? = null
@@ -73,20 +77,28 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) { render() }
     }
+    private val appOps = context.getSystemService(AppOpsManager::class.java)
+    private val pipPermissionListener = AppOpsManager.OnOpChangedListener { _, _ -> scope.launch { render() } }
 
     init {
         SettingsDataStore.init(context)
+        appOps.startWatchingMode(AppOpsManager.OPSTR_PICTURE_IN_PICTURE, context.packageName, pipPermissionListener)
         context.registerReceiver(receiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT); addAction(Intent.ACTION_CONFIGURATION_CHANGED)
         }, Context.RECEIVER_NOT_EXPORTED)
         scope.launch {
             combine(SettingsDataStore.settingsFlow(), VirtualScreenSession.state) { options, display -> options to display }
-                .collect { (options, display) -> settings = options; state = display; render() }
+                .collect { (options, display) ->
+                    if (options.virtualScreenPreviewMode != settings.virtualScreenPreviewMode ||
+                        options.virtualScreenFloatingPreviewEnabled != settings.virtualScreenFloatingPreviewEnabled) pip.reset()
+                    settings = options; state = display; render()
+                }
         }
     }
 
     private fun render() {
+        pip.updateTarget(state)
         if (run != state.activeRunId) {
             run = state.activeRunId; collapsed = false
             position = null
@@ -96,11 +108,33 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
             state.isAgentControlling && run != null && !state.fullViewerVisible &&
             Settings.canDrawOverlays(context) && context.getSystemService(PowerManager::class.java).isInteractive &&
             !context.getSystemService(KeyguardManager::class.java).isKeyguardLocked
-        if (!visible) { removeWindow(); return }
+        if (!visible) {
+            pipLaunch?.cancel(); pipLaunch = null
+            pip.hide(); removeWindow(); return
+        }
+        val native = settings.virtualScreenPreviewMode == VirtualScreenPreviewMode.PICTURE_IN_PICTURE &&
+            VirtualScreenPipPreviewController.allowed(context)
+        if (!native) pip.hide()
+        if (native && (pip.ready || !pip.canLaunch && !pip.pending && !pip.useFallback)) {
+            removeWindow(); return
+        }
         if (root == null) addWindow()
         if (root == null) return
         if (!dragging) resize()
         if (collapsed) stopCapture() else startCapture()
+        if (native && pip.canLaunch && pipLaunch?.isActive != true) {
+            // A genuine, visible preview grants the existing overlay-based background launch exception.
+            // Keep it until PiP acknowledges entry; never use an invisible permission shim.
+            pipLaunch = scope.launch {
+                delay(250)
+                if (root?.isShown == true && settings.virtualScreenPreviewMode == VirtualScreenPreviewMode.PICTURE_IN_PICTURE &&
+                    settings.virtualScreenFloatingPreviewEnabled && settings.virtualScreenEnabled &&
+                    state.isAgentControlling && !state.fullViewerVisible && pip.canLaunch &&
+                    VirtualScreenPipPreviewController.screenAvailable(context)) {
+                    pip.launch()
+                }
+            }
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -269,6 +303,8 @@ internal class VirtualScreenFloatingPreviewHost(private val context: Context) : 
     }
 
     override fun close() {
+        pipLaunch?.cancel(); pip.close()
+        appOps.stopWatchingMode(pipPermissionListener)
         removeWindow(); scope.cancel(); runCatching { context.unregisterReceiver(receiver) }
     }
 

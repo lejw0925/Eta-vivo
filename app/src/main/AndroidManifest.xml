@@ -96,6 +96,13 @@
         <activity android:name=".agent.display.VirtualScreenViewerActivity" android:exported="false"
             android:label="@string/virtual_screen_title" android:theme="@style/Theme.Eta"
             android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".agent.display.VirtualScreenPipPreviewActivity" android:exported="false"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true" android:supportsPictureInPicture="true"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
+            android:taskAffinity="io.github.mangi.eta.virtualscreen.preview"
+            android:theme="@style/Theme.Eta" />
         <activity android:name=".agent.display.VirtualScreenHomeActivity" android:exported="false"
             android:excludeFromRecents="true" android:resizeableActivity="true"
             android:taskAffinity="io.github.mangi.eta.virtualscreen"

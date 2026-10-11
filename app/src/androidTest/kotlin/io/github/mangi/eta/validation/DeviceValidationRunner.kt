@@ -43,6 +43,7 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppearanceSettings
+import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.ui.screens.tasks.VirtualScreenSettingsScreen
 import kotlinx.coroutines.runBlocking
@@ -78,6 +79,7 @@ class DeviceValidationRunner : Instrumentation() {
                 virtualScreenOffEnabled = backup.optBoolean("screen_off", it.virtualScreenOffEnabled),
                 virtualScreenIdleTimeoutMinutes = backup.getInt("idle_timeout"),
                 virtualScreenFloatingPreviewEnabled = backup.optBoolean("floating", it.virtualScreenFloatingPreviewEnabled),
+                virtualScreenPreviewMode = VirtualScreenPreviewMode.fromPersistedValue(backup.optString("preview_mode", it.virtualScreenPreviewMode.persistedValue)),
                 defaultAssistantSystemPrompt = backup.optString("default_prompt", it.defaultAssistantSystemPrompt),
                 memoryEnabled = backup.optBoolean("memory", it.memoryEnabled),
                 autoMemoryEnabled = backup.optBoolean("auto_memory", it.autoMemoryEnabled),
@@ -101,6 +103,7 @@ class DeviceValidationRunner : Instrumentation() {
             .put("auto_restart", original.virtualScreenAutoRestartApps)
             .put("screen_off", original.virtualScreenOffEnabled)
             .put("floating", original.virtualScreenFloatingPreviewEnabled)
+            .put("preview_mode", original.virtualScreenPreviewMode.persistedValue)
             .put("default_prompt", original.defaultAssistantSystemPrompt)
             .put("memory", original.memoryEnabled)
             .put("auto_memory", original.autoMemoryEnabled)
@@ -117,7 +120,7 @@ class DeviceValidationRunner : Instrumentation() {
             }
             automation.adoptShellPermissionIdentity("android.permission.QUERY_ALL_PACKAGES")
             if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery", "stop_resume", "stop_resume_baseline",
-                "floating", "feature_ui", "interjection")) connectEnabledAccessibilityService()
+                "floating", "pip", "feature_ui", "interjection")) connectEnabledAccessibilityService()
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true,
                 virtualScreenFallbackEnabled = false, virtualScreenAutoRestartApps = false,
                 virtualScreenOffEnabled = mode in setOf("recovery", "landscape", "frames", "frame_recovery") || original.virtualScreenOffEnabled,
@@ -135,6 +138,10 @@ class DeviceValidationRunner : Instrumentation() {
                 "gui_slow_submit" -> validateSlowSubmit()
                 "swipe_path" -> validateSwipePath()
                 "floating" -> validateFloatingPreview()
+                "pip" -> DevicePipPreviewValidation(this, automation, { tools(it) }) {
+                    checks += it
+                    sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
+                }.run()
                 "feature_ui" -> DeviceFeatureUiValidation(this, automation) { record -> checks += record }.run()
                 "interjection" -> DeviceInterjectionValidation(targetContext) { record -> checks += record }.run()
                 "tree" -> DeviceUiTreeValidation(this, automation) { record ->
@@ -729,6 +736,9 @@ class DeviceValidationRunner : Instrumentation() {
 
     private fun validateFloatingPreview() {
         verify("floating overlay permission already granted", android.provider.Settings.canDrawOverlays(targetContext))
+        verify("floating fixture uses unrestricted primary home", automation.performGlobalAction(
+            android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME))
+        SystemClock.sleep(1_000)
         val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
         fun previewWindow(): android.view.View? {
             val serviceField = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }
@@ -750,7 +760,8 @@ class DeviceValidationRunner : Instrumentation() {
         }
         fun captureState() = JSONObject(VirtualScreenSession.execute(targetContext, "device-validation",
             JSONObject().put("action", "probe"), manual = true).content).getJSONObject("capture")
-        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
+        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true,
+            virtualScreenPreviewMode = VirtualScreenPreviewMode.FLOATING) } }
         tools("floating-preview-run").use { tools ->
             ok("create floating fixture display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
             ok("launch changing floating fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
