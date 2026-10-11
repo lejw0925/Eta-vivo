@@ -43,7 +43,6 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.core.AgentLogger
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.AppearanceSettings
-import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.ui.screens.tasks.VirtualScreenSettingsScreen
 import kotlinx.coroutines.runBlocking
@@ -78,8 +77,7 @@ class DeviceValidationRunner : Instrumentation() {
                 virtualScreenAutoRestartApps = backup.getBoolean("auto_restart"),
                 virtualScreenOffEnabled = backup.optBoolean("screen_off", it.virtualScreenOffEnabled),
                 virtualScreenIdleTimeoutMinutes = backup.getInt("idle_timeout"),
-                virtualScreenFloatingPreviewEnabled = backup.optBoolean("floating", it.virtualScreenFloatingPreviewEnabled),
-                virtualScreenPreviewMode = VirtualScreenPreviewMode.fromPersistedValue(backup.optString("preview_mode", it.virtualScreenPreviewMode.persistedValue)),
+                virtualScreenPreviewEnabled = backup.optBoolean("floating", it.virtualScreenPreviewEnabled),
                 defaultAssistantSystemPrompt = backup.optString("default_prompt", it.defaultAssistantSystemPrompt),
                 memoryEnabled = backup.optBoolean("memory", it.memoryEnabled),
                 autoMemoryEnabled = backup.optBoolean("auto_memory", it.autoMemoryEnabled),
@@ -102,8 +100,7 @@ class DeviceValidationRunner : Instrumentation() {
             .put("fallback", original.virtualScreenFallbackEnabled)
             .put("auto_restart", original.virtualScreenAutoRestartApps)
             .put("screen_off", original.virtualScreenOffEnabled)
-            .put("floating", original.virtualScreenFloatingPreviewEnabled)
-            .put("preview_mode", original.virtualScreenPreviewMode.persistedValue)
+            .put("floating", original.virtualScreenPreviewEnabled)
             .put("default_prompt", original.defaultAssistantSystemPrompt)
             .put("memory", original.memoryEnabled)
             .put("auto_memory", original.autoMemoryEnabled)
@@ -120,7 +117,7 @@ class DeviceValidationRunner : Instrumentation() {
             }
             automation.adoptShellPermissionIdentity("android.permission.QUERY_ALL_PACKAGES")
             if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery", "stop_resume", "stop_resume_baseline",
-                "floating", "pip", "feature_ui", "interjection")) connectEnabledAccessibilityService()
+                "pip", "feature_ui", "interjection")) connectEnabledAccessibilityService()
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true,
                 virtualScreenFallbackEnabled = false, virtualScreenAutoRestartApps = false,
                 virtualScreenOffEnabled = mode in setOf("recovery", "landscape", "frames", "frame_recovery") || original.virtualScreenOffEnabled,
@@ -137,7 +134,6 @@ class DeviceValidationRunner : Instrumentation() {
                 "gui_no_tree" -> validateGuiWithoutTree()
                 "gui_slow_submit" -> validateSlowSubmit()
                 "swipe_path" -> validateSwipePath()
-                "floating" -> validateFloatingPreview()
                 "pip" -> DevicePipPreviewValidation(this, automation, { tools(it) }) {
                     checks += it
                     sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
@@ -732,129 +728,6 @@ class DeviceValidationRunner : Instrumentation() {
             tools.retainVirtualScreenOnSuccess()
         }
         shell("am force-stop io.github.mangi.eta.test")
-    }
-
-    private fun validateFloatingPreview() {
-        verify("floating overlay permission already granted", android.provider.Settings.canDrawOverlays(targetContext))
-        verify("floating fixture uses unrestricted primary home", automation.performGlobalAction(
-            android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME))
-        SystemClock.sleep(1_000)
-        val component = "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}"
-        fun previewWindow(): android.view.View? {
-            val serviceField = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }
-            val service = serviceField.get(null) ?: return null
-            val host = service.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }.get(service) ?: return null
-            val rootField = host.javaClass.getDeclaredField("root").apply { isAccessible = true }
-            val root = java.util.concurrent.atomic.AtomicReference<android.view.View?>()
-            runOnMainSync { root.set((rootField.get(host) as? android.view.View)?.takeIf { it.isAttachedToWindow && it.isShown }) }
-            return root.get()
-        }
-        fun bounds(): android.graphics.Rect {
-            val rect = android.graphics.Rect()
-            val view = checkNotNull(previewWindow())
-            runOnMainSync {
-                val location = IntArray(2).also(view::getLocationOnScreen)
-                rect.set(location[0], location[1], location[0] + view.width, location[1] + view.height)
-            }
-            return rect
-        }
-        fun captureState() = JSONObject(VirtualScreenSession.execute(targetContext, "device-validation",
-            JSONObject().put("action", "probe"), manual = true).content).getJSONObject("capture")
-        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true,
-            virtualScreenPreviewMode = VirtualScreenPreviewMode.FLOATING) } }
-        tools("floating-preview-run").use { tools ->
-            ok("create floating fixture display", call(tools, "virtual_screen", JSONObject().put("action", "create")))
-            ok("launch changing floating fixture", call(tools, "virtual_screen", JSONObject().put("action", "launch")
-                .put("component", component).put("uri", "eta-validation://frames")))
-            val viewer = VirtualScreenSession.state.value
-            checks += "Floating state: controlling=${viewer.isAgentControlling}, phase=${viewer.taskPhase}, full=${viewer.fullViewerVisible}, run=${viewer.activeRunId != null}"
-            val serviceField = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }
-            val service = serviceField.get(null)
-            checks += "Floating service: present=${service != null}"
-            if (service != null) {
-                val hostField = service.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }
-                val host = hostField.get(service)
-                checks += "Floating host: present=${host != null}"
-            }
-            eventually("floating preview visible on primary display", { previewWindow() != null })
-            eventually("floating preview activates capture", { captureState().optBoolean("viewer_visible") })
-            val before = captureState().getLong("encoded_frames")
-            val start = SystemClock.elapsedRealtime()
-            SystemClock.sleep(1_000)
-            val count = captureState().getLong("encoded_frames") - before
-            verify("floating preview supplies live frames", count >= 3)
-            verify("floating preview stays within ten fps", count <= (SystemClock.elapsedRealtime() - start) / 100 + 1)
-            val executionService = io.github.mangi.eta.agent.runtime.AgentExecutionService::class.java
-                .getDeclaredField("instance").apply { isAccessible = true }.get(null)!!
-            val previewHost = executionService.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }.get(executionService)!!
-            fun previewScreenshot(name: String) {
-                // Only the synthetic fixture is captured. Production previews retain FLAG_SECURE.
-                val view = checkNotNull(previewWindow())
-                val params = previewHost.javaClass.getDeclaredField("params").apply { isAccessible = true }
-                    .get(previewHost) as WindowManager.LayoutParams
-                val manager = previewHost.javaClass.getDeclaredField("manager").apply { isAccessible = true }
-                    .get(previewHost) as WindowManager
-                val flags = params.flags
-                try {
-                    runOnMainSync {
-                        params.flags = flags and WindowManager.LayoutParams.FLAG_SECURE.inv()
-                        manager.updateViewLayout(view, params)
-                    }
-                    SystemClock.sleep(200)
-                    val area = bounds()
-                    val image = checkNotNull(automation.takeScreenshot())
-                    try {
-                        val crop = Bitmap.createBitmap(image, area.left, area.top, area.width(), area.height())
-                        try {
-                            val directory = File(targetContext.getExternalFilesDir(null), "validation").apply { mkdirs() }
-                            File(directory, name).outputStream().use { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }
-                        } finally { crop.recycle() }
-                    } finally { image.recycle() }
-                } finally {
-                    runOnMainSync { params.flags = flags; manager.updateViewLayout(view, params) }
-                }
-            }
-            verify("floating preview decodes and displays frames", previewHost.javaClass.getDeclaredField("lastFrame")
-                .apply { isAccessible = true }.getLong(previewHost) > 0)
-            val fullBounds = bounds()
-            verify("floating preview is a portrait rectangle", fullBounds.height() > fullBounds.width())
-            previewScreenshot("floating-preview.png")
-            verify("floating preview can be dragged to left edge", dragPrimary(fullBounds.centerX().toFloat(), 16f,
-                fullBounds.centerY().toFloat()))
-            eventually("edge folds floating preview", {
-                previewWindow() != null && bounds().width() < fullBounds.width() / 2
-            })
-            eventually("folded preview releases capture", { !captureState().optBoolean("viewer_visible") })
-            previewScreenshot("floating-preview-folded.png")
-            val foldedFrames = captureState().getLong("encoded_frames")
-            SystemClock.sleep(500)
-            verify("folded preview does not encode frames", captureState().getLong("encoded_frames") == foldedFrames)
-            val foldedBounds = bounds()
-            verify("folded bubble opens virtual screen", tapPrimary(foldedBounds.centerX().toFloat(), foldedBounds.centerY().toFloat()))
-            eventually("tap opens full virtual viewer", { VirtualScreenSession.state.value.fullViewerVisible })
-            eventually("full viewer hides floating window", { previewWindow() == null })
-            eventually("full viewer keeps its own capture lease", { captureState().optBoolean("viewer_visible") })
-            verify("viewer back action succeeds", automation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
-            eventually("floating preview returns after full viewer", { !VirtualScreenSession.state.value.fullViewerVisible && previewWindow() != null })
-            val bubble = bounds()
-            val primaryWidth = targetContext.getSystemService(DisplayManager::class.java).getDisplay(0)
-                .let { display -> android.graphics.Point().also(display::getRealSize).x }
-            verify("dragging bubble away from edge succeeds", dragPrimary(bubble.centerX().toFloat(), primaryWidth / 2f, bubble.centerY().toFloat()))
-            eventually("dragging away expands preview", { bounds().width() >= fullBounds.width() })
-            eventually("expanded preview resumes capture", { captureState().optBoolean("viewer_visible") })
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = false) } }
-            eventually("disabling preference removes floating window", { previewWindow() == null })
-            eventually("disabled preview releases capture", { !captureState().optBoolean("viewer_visible") })
-            val hiddenFrames = captureState().getLong("encoded_frames")
-            SystemClock.sleep(400)
-            verify("disabled preview stays idle", captureState().getLong("encoded_frames") == hiddenFrames)
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
-            eventually("preference can restore preview in same task", { previewWindow() != null })
-            tools.retainVirtualScreenOnSuccess()
-        }
-        eventually("ending task hides floating preview", { previewWindow() == null })
-        verify("task end still retains virtual display", VirtualScreenSession.isActive())
-        eventually("retained idle display stops preview capture", { !captureState().optBoolean("viewer_visible") })
     }
 
     private fun validateFrameCapture() {

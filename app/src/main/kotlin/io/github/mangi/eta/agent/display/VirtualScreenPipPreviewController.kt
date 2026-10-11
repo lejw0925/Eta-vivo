@@ -29,9 +29,7 @@ internal class VirtualScreenPipPreviewController(
     private var activity: WeakReference<VirtualScreenPipPreviewActivity>? = null
     private var timeout: Job? = null
     val ready: Boolean get() = launchState.ready
-    val useFallback: Boolean get() = launchState.useFallback
     val canLaunch: Boolean get() = launchState.canLaunch
-    val pending: Boolean get() = launchState.requestId != null
 
     fun updateTarget(state: VirtualScreenViewerState) {
         val target = state.activeRunId?.let { run -> state.display?.let {

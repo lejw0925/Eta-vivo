@@ -1539,16 +1539,12 @@
     <string name="inbox_refine">继续完善</string>
     <string name="inbox_operation_failed">方案操作未完成，请重试</string>
     <string name="inbox_refinement_conversation">完善沉淀方案</string>
-    <string name="virtual_screen_floating_enable">虚拟屏预览</string>
-    <string name="virtual_screen_floating_summary">Eta 操作虚拟屏时显示实时预览。可拖动、贴边折叠，点击进入虚拟屏；折叠或隐藏时停止预览抓帧。</string>
-    <string name="virtual_screen_floating_open">打开虚拟屏</string>
-    <string name="virtual_screen_preview_mode">预览样式</string>
-    <string name="virtual_screen_preview_floating">悬浮窗</string>
-    <string name="virtual_screen_preview_pip">系统画中画</string>
-    <string name="virtual_screen_pip_summary">Eta 操作虚拟屏时以系统画中画显示实时预览。放大后可操作虚拟屏；贴边收起或隐藏时停止抓帧。画中画不可用时使用悬浮窗。</string>
+    <string name="virtual_screen_preview_enable">虚拟屏预览</string>
+    <string name="virtual_screen_preview_open">打开虚拟屏</string>
+    <string name="virtual_screen_pip_summary">Eta 操作虚拟屏时以系统画中画显示实时预览。放大后可操作虚拟屏；贴边收起或隐藏时停止抓帧。</string>
     <string name="virtual_screen_pip_unsupported">此设备不支持系统画中画。</string>
     <string name="virtual_screen_pip_permission">允许画中画</string>
-    <string name="virtual_screen_pip_permission_summary">在系统设置中允许 Eta 使用画中画；开启前使用悬浮窗预览。</string>
+    <string name="virtual_screen_pip_permission_summary">在系统设置中允许 Eta 使用画中画。</string>
     <string name="chat_interject_hint">输入消息，实时插话调整当前任务…</string>
     <string name="chat_interject_unavailable">尚未确认当前任务收到插话，已保留草稿；请确认任务状态后再发送。</string>
 </resources>

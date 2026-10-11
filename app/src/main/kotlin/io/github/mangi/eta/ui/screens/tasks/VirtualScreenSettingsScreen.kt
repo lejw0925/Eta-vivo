@@ -34,7 +34,6 @@ import io.github.mangi.eta.agent.display.VirtualScreenPipPreviewController
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.Settings
 import io.github.mangi.eta.data.model.VirtualScreenIdleTimeout
-import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import io.github.mangi.eta.ui.app.rememberExecutionNotificationRequest
 import io.github.mangi.eta.ui.components.EtaPreferenceDefaults
 import io.github.mangi.eta.ui.components.EtaPreferenceDivider
@@ -68,12 +67,18 @@ internal fun VirtualScreenSettingsScreen(onBack: () -> Unit) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (AndroidSettings.canDrawOverlays(context)) {
+    val pipPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        pipAllowed = VirtualScreenPipPreviewController.allowed(context)
+        if (pipAllowed) {
             scope.launch(Dispatchers.IO) {
-                SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) }
+                SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = true) }
             }
         }
+    }
+    val openPipPermission = {
+        val permission = Intent("android.settings.PICTURE_IN_PICTURE_SETTINGS", Uri.parse("package:${context.packageName}"))
+        val fallback = Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+        pipPermission.launch(if (permission.resolveActivity(context.packageManager) != null) permission else fallback)
     }
     var timeoutDraft by remember { mutableFloatStateOf(1f) }
     LaunchedEffect(settings.virtualScreenIdleTimeoutMinutes) {
@@ -103,46 +108,26 @@ internal fun VirtualScreenSettingsScreen(onBack: () -> Unit) {
                     })
                 EtaPreferenceDivider(hasLeading = false)
                 EtaSwitchPreference(
-                    title = stringResource(R.string.virtual_screen_floating_enable),
-                    summary = stringResource(if (settings.virtualScreenPreviewMode == VirtualScreenPreviewMode.PICTURE_IN_PICTURE)
-                        R.string.virtual_screen_pip_summary else R.string.virtual_screen_floating_summary),
-                    checked = settings.virtualScreenFloatingPreviewEnabled,
-                    enabled = settings.virtualScreenEnabled,
+                    title = stringResource(R.string.virtual_screen_preview_enable),
+                    summary = stringResource(if (pipSupported) R.string.virtual_screen_pip_summary else R.string.virtual_screen_pip_unsupported),
+                    checked = settings.virtualScreenPreviewEnabled,
+                    enabled = settings.virtualScreenEnabled && pipSupported,
                     onCheckedChange = { value ->
-                        if (value && !AndroidSettings.canDrawOverlays(context)) {
-                            overlayPermission.launch(Intent(AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}")))
+                        if (value && !pipAllowed) {
+                            openPipPermission()
                         } else {
                             scope.launch(Dispatchers.IO) {
-                                SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = value) }
+                                SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = value) }
                             }
-                        }
-                    })
-                EtaPreferenceDivider(hasLeading = false)
-                val previewModes = if (pipSupported) VirtualScreenPreviewMode.entries else listOf(VirtualScreenPreviewMode.FLOATING)
-                EtaOverlayDropdownPreference(
-                    title = stringResource(R.string.virtual_screen_preview_mode),
-                    items = previewModes.map { stringResource(if (it == VirtualScreenPreviewMode.FLOATING)
-                        R.string.virtual_screen_preview_floating else R.string.virtual_screen_preview_pip) },
-                    selectedIndex = previewModes.indexOf(settings.virtualScreenPreviewMode).coerceAtLeast(0),
-                    summary = if (pipSupported) null else stringResource(R.string.virtual_screen_pip_unsupported),
-                    enabled = settings.virtualScreenEnabled,
-                    onSelectedIndexChange = { index ->
-                        scope.launch(Dispatchers.IO) {
-                            SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewMode = previewModes[index]) }
                         }
                     },
                 )
-                if (settings.virtualScreenPreviewMode == VirtualScreenPreviewMode.PICTURE_IN_PICTURE && pipSupported && !pipAllowed) {
+                if (pipSupported && !pipAllowed) {
                     EtaPreferenceDivider(hasLeading = false)
                     EtaArrowPreference(
                         title = stringResource(R.string.virtual_screen_pip_permission),
                         summary = stringResource(R.string.virtual_screen_pip_permission_summary),
-                        onClick = {
-                            val permission = Intent("android.settings.PICTURE_IN_PICTURE_SETTINGS", Uri.parse("package:${context.packageName}"))
-                            val fallback = Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
-                            context.startActivity(if (permission.resolveActivity(context.packageManager) != null) permission else fallback)
-                        },
+                        onClick = openPipPermission,
                     )
                 }
                 EtaPreferenceDivider(hasLeading = false)

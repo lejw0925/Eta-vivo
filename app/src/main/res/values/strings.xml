@@ -1559,16 +1559,12 @@
     <string name="inbox_refine">Refine</string>
     <string name="inbox_operation_failed">Could not update this proposal. Try again.</string>
     <string name="inbox_refinement_conversation">Refine learning proposal</string>
-    <string name="virtual_screen_floating_enable">Virtual screen preview</string>
-    <string name="virtual_screen_floating_summary">Show a live preview while Eta uses the virtual screen. Drag to move, bring to an edge to fold, or tap to open. Captures stop when folded or hidden.</string>
-    <string name="virtual_screen_floating_open">Open virtual screen</string>
-    <string name="virtual_screen_preview_mode">Preview style</string>
-    <string name="virtual_screen_preview_floating">Floating window</string>
-    <string name="virtual_screen_preview_pip">System picture-in-picture</string>
-    <string name="virtual_screen_pip_summary">Show a live preview in picture-in-picture while Eta uses the virtual screen. Expand to control it; captures stop when stashed or hidden. Uses the floating window if picture-in-picture is unavailable.</string>
+    <string name="virtual_screen_preview_enable">Virtual screen preview</string>
+    <string name="virtual_screen_preview_open">Open virtual screen</string>
+    <string name="virtual_screen_pip_summary">Show a live virtual screen preview in system picture-in-picture while Eta is working. Expand to control the screen; captures stop when tucked away or hidden.</string>
     <string name="virtual_screen_pip_unsupported">This device does not support picture-in-picture.</string>
     <string name="virtual_screen_pip_permission">Allow picture-in-picture</string>
-    <string name="virtual_screen_pip_permission_summary">Enable Eta in system settings. Until then, previews use the floating window.</string>
+    <string name="virtual_screen_pip_permission_summary">Allow Eta to use picture-in-picture in system settings.</string>
     <string name="chat_interject_hint">Add a message to redirect the current task…</string>
     <string name="chat_interject_unavailable">Receipt of this message was not confirmed. Your draft is kept; check the task before sending again.</string>
 </resources>

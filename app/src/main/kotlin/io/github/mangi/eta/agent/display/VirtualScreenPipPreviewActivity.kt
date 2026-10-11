@@ -59,7 +59,7 @@ internal class VirtualScreenPipPreviewActivity : ComponentActivity() {
         surface = VirtualScreenSurfaceView(this).apply {
             touchEnabled = false
             setBackgroundColor(Color.BLACK)
-            contentDescription = getString(R.string.virtual_screen_floating_open)
+            contentDescription = getString(R.string.virtual_screen_preview_open)
         }.also { setContentView(it) }
         lifecycleScope.launch {
             VirtualScreenSession.state.collect { state ->

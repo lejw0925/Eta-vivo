@@ -18,7 +18,6 @@ internal class VirtualScreenPipLaunchState {
     val canLaunch: Boolean
         get() = target != null && target?.runId != dismissedRun && target != failed &&
             requestId == null && !waitingForViewer
-    val useFallback: Boolean get() = target != null && target == failed
 
     fun updateTarget(next: Target?) {
         if (next == target) return

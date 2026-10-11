@@ -30,7 +30,6 @@ class VirtualScreenPipLaunchStateTest {
         state.hide()
         state.updateTarget(fixtureTarget)
         assertFalse(state.canLaunch)
-        assertFalse(state.useFallback)
         state.updateTarget(fixtureTarget.copy(runId = "run-b"))
         assertTrue(state.canLaunch)
     }
@@ -52,14 +51,12 @@ class VirtualScreenPipLaunchStateTest {
     }
 
     @Test
-    fun startupFailureFallsBackOnceWithoutAnActivityLaunchLoop() {
+    fun startupFailureStopsWithoutAnActivityLaunchLoop() {
         val state = launched()
         state.fail("request-a")
-        assertTrue(state.useFallback)
         assertFalse(state.canLaunch)
         assertFalse(state.markReady("request-a"))
         state.updateTarget(fixtureTarget.copy(sessionId = "display-b"))
-        assertFalse(state.useFallback)
         assertTrue(state.canLaunch)
     }
 
@@ -98,7 +95,6 @@ class VirtualScreenPipLaunchStateTest {
         val state = launched()
         assertTrue(state.openViewer("request-a"))
         assertTrue(state.viewerLaunchFailed())
-        assertTrue(state.useFallback)
         assertFalse(state.canLaunch)
         assertFalse(state.viewerLaunchFailed())
     }

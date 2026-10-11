@@ -18,10 +18,8 @@ import io.github.mangi.eta.agent.display.VirtualScreenPipPreviewController
 import io.github.mangi.eta.agent.display.VirtualScreenSession
 import io.github.mangi.eta.agent.display.VirtualScreenViewerActivity
 import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.agent.runtime.AgentExecutionService
 import io.github.mangi.eta.agent.tool.AgentLocalTools
 import io.github.mangi.eta.data.datastore.SettingsDataStore
-import io.github.mangi.eta.data.model.VirtualScreenPreviewMode
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.ui.app.AgentAppTheme
 import io.github.mangi.eta.ui.screens.tasks.VirtualScreenSettingsScreen
@@ -42,7 +40,6 @@ internal class DevicePipPreviewValidation(
 
     fun run() {
         verify("PiP feature and permission available", VirtualScreenPipPreviewController.allowed(context))
-        verify("preview overlay permission granted", android.provider.Settings.canDrawOverlays(context))
         verify("phone unlocked for preview", VirtualScreenPipPreviewController.screenAvailable(context))
         instrumentation.runOnMainSync {
             context.startActivity(Intent(context, io.github.mangi.eta.ui.MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
@@ -55,15 +52,13 @@ internal class DevicePipPreviewValidation(
                 ActivityOptions.makeBasic().apply { launchDisplayId = Display.DEFAULT_DISPLAY }.toBundle())
         }
         SystemClock.sleep(1_000)
-        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true,
-            virtualScreenPreviewMode = VirtualScreenPreviewMode.PICTURE_IN_PICTURE) } }
+        runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = true) } }
         toolsFactory("pip-preview-run").use { tools ->
             call(tools, "create PiP fixture display", JSONObject().put("action", "create"))
             call(tools, "launch changing PiP fixture", JSONObject().put("action", "launch")
                 .put("component", "io.github.mangi.eta.test/${DisplayProbeActivity::class.java.name}")
                 .put("uri", "eta-validation://frames"))
             awaitPip()
-            eventually("native preview releases floating window", { !floatingVisible() })
             eventually("native PiP decodes live frames", { lastFrame() > 0 })
             eventually("native PiP activates capture lease", { capture().optBoolean("viewer_visible") })
             val preview = checkNotNull(activity())
@@ -110,17 +105,11 @@ internal class DevicePipPreviewValidation(
             verify("full viewer can return", automation.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK))
             awaitPip()
 
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewMode = VirtualScreenPreviewMode.FLOATING) } }
-            eventually("switching style removes native PiP", { activity() == null })
-            eventually("switching style restores floating preview", { floatingVisible() })
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewMode = VirtualScreenPreviewMode.PICTURE_IN_PICTURE) } }
-            awaitPip()
-            eventually("only native preview remains after switch", { !floatingVisible() })
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = false) } }
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = false) } }
             eventually("preview switch removes PiP", { activity() == null })
             eventually("disabled preview releases capture lease", { !capture().optBoolean("viewer_visible") })
             assertIdle("disabled native preview stays idle")
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = true) } }
             awaitPip()
 
             SystemClock.sleep(1_000)
@@ -131,14 +120,14 @@ internal class DevicePipPreviewValidation(
                 .performAction(AccessibilityNodeInfo.ACTION_CLICK))
             eventually("closing native PiP releases capture", { activity() == null && !capture().optBoolean("viewer_visible") })
             SystemClock.sleep(3_500)
-            verify("closed PiP does not reappear in same run", activity() == null && !floatingVisible())
+            verify("closed PiP does not reappear in same run", activity() == null)
             assertIdle("closed PiP stays idle")
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = false) } }
-            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenFloatingPreviewEnabled = true) } }
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = false) } }
+            runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenPreviewEnabled = true) } }
             awaitPip()
             tools.retainVirtualScreenOnSuccess()
         }
-        eventually("ending task removes native PiP", { activity() == null && !floatingVisible() })
+        eventually("ending task removes native PiP", { activity() == null })
         verify("task end retains virtual display", VirtualScreenSession.isActive())
         eventually("retained display releases preview lease", { !capture().optBoolean("viewer_visible") })
         assertIdle("idle retained display stays idle")
@@ -154,23 +143,13 @@ internal class DevicePipPreviewValidation(
                     VirtualScreenSettingsScreen(onBack = {})
                 } }
             }
-            val title = context.getString(R.string.virtual_screen_preview_mode)
-            val floating = context.getString(R.string.virtual_screen_preview_floating)
-            val pip = context.getString(R.string.virtual_screen_preview_pip)
-            eventually("preview style choice is visible", { textNode(title) != null })
-            verify("preview style menu can open", clickText(title))
-            eventually("floating style option available", { textNode(floating) != null })
-            verify("floating style can be selected", clickText(floating))
-            eventually("floating choice persists from UI", {
-                runBlocking { SettingsDataStore.settings() }.virtualScreenPreviewMode == VirtualScreenPreviewMode.FLOATING
-            })
-            SystemClock.sleep(500)
-            verify("preview style menu can reopen", clickText(title))
-            eventually("native PiP option available", { textNode(pip) != null })
-            verify("native PiP style can be selected", clickText(pip))
-            eventually("native PiP choice persists from UI", {
-                runBlocking { SettingsDataStore.settings() }.virtualScreenPreviewMode == VirtualScreenPreviewMode.PICTURE_IN_PICTURE
-            })
+            val title = context.getString(R.string.virtual_screen_preview_enable)
+            val summary = context.getString(R.string.virtual_screen_pip_summary)
+            eventually("system PiP preview setting is visible", { textNode(title) != null && textNode(summary) != null })
+            verify("preview can be disabled from UI", clickText(title))
+            eventually("disabled preview persists from UI", { !runBlocking { SettingsDataStore.settings() }.virtualScreenPreviewEnabled })
+            verify("preview can be enabled from UI", clickText(title))
+            eventually("enabled preview persists from UI", { runBlocking { SettingsDataStore.settings() }.virtualScreenPreviewEnabled })
             SystemClock.sleep(500)
             instrumentation.runOnMainSync { viewer.window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
             SystemClock.sleep(200)
@@ -231,12 +210,6 @@ internal class DevicePipPreviewValidation(
     private fun lastFrame(): Long = activity()?.let { preview -> main {
         preview.javaClass.getDeclaredField("lastFrame").apply { isAccessible = true }.getLong(preview)
     } } ?: 0
-
-    private fun floatingVisible(): Boolean = main {
-        val service = AgentExecutionService::class.java.getDeclaredField("instance").apply { isAccessible = true }.get(null) ?: return@main false
-        val host = service.javaClass.getDeclaredField("floatingPreview").apply { isAccessible = true }.get(service) ?: return@main false
-        (host.javaClass.getDeclaredField("root").apply { isAccessible = true }.get(host) as? android.view.View)?.isShown == true
-    }
 
     private fun bounds(): Rect {
         // PiP transforms a task surface. DecorView coordinates describe the unscaled task;
