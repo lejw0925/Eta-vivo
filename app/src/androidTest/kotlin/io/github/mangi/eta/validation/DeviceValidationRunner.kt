@@ -117,7 +117,7 @@ class DeviceValidationRunner : Instrumentation() {
             }
             automation.adoptShellPermissionIdentity("android.permission.QUERY_ALL_PACKAGES")
             if (mode !in setOf("recovery", "landscape", "frames", "frame_recovery", "stop_resume", "stop_resume_baseline",
-                "pip", "feature_ui", "interjection")) connectEnabledAccessibilityService()
+                "pip", "manual_path", "feature_ui", "interjection")) connectEnabledAccessibilityService()
             runBlocking { SettingsDataStore.updateSettings { it.copy(virtualScreenEnabled = true,
                 virtualScreenFallbackEnabled = false, virtualScreenAutoRestartApps = false,
                 virtualScreenOffEnabled = mode in setOf("recovery", "landscape", "frames", "frame_recovery") || original.virtualScreenOffEnabled,
@@ -134,6 +134,10 @@ class DeviceValidationRunner : Instrumentation() {
                 "gui_no_tree" -> validateGuiWithoutTree()
                 "gui_slow_submit" -> validateSlowSubmit()
                 "swipe_path" -> validateSwipePath()
+                "manual_path" -> DeviceManualPathValidation(this, automation, { tools(it) }) {
+                    checks += it
+                    sendStatus(0, Bundle().apply { putString("stream", it + "\n") })
+                }.run()
                 "pip" -> DevicePipPreviewValidation(this, automation, { tools(it) }) {
                     checks += it
                     sendStatus(0, Bundle().apply { putString("stream", it + "\n") })

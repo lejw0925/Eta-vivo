@@ -44,7 +44,97 @@ class VirtualScreenSurfaceViewTest {
         touch(view, MotionEvent.ACTION_DOWN, 500f, 1000f, 1000)
         touch(view, MotionEvent.ACTION_UP, 500f, -100f, 1500)
         assertEquals("swipe", inputs.single().getString("action"))
-        assertEquals(0, inputs.single().getInt("y2"))
+        assertEquals(0, inputs.single().getJSONArray("path").getJSONObject(1).getInt("y"))
+        view.clearFrame()
+    }
+
+    @Test
+    fun manualSwipeForwardsIntermediateVerticesInsteadOfOnlyEndpoints() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        touch(view, MotionEvent.ACTION_DOWN, 200f, 400f, 1000)
+        touch(view, MotionEvent.ACTION_MOVE, 800f, 400f, 1200)
+        touch(view, MotionEvent.ACTION_MOVE, 800f, 1400f, 1400)
+        touch(view, MotionEvent.ACTION_UP, 200f, 1400f, 1600)
+        val path = inputs.single().getJSONArray("path")
+        assertEquals(4, path.length())
+        assertEquals(576, path.getJSONObject(1).getInt("x"))
+        assertEquals(207, path.getJSONObject(1).getInt("y"))
+        assertEquals(576, path.getJSONObject(2).getInt("x"))
+        assertEquals(928, path.getJSONObject(2).getInt("y"))
+        view.clearFrame()
+    }
+
+    @Test
+    fun closedStrokeRemainsASwipeWhenTheFingerReturnsToItsStart() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        touch(view, MotionEvent.ACTION_DOWN, 200f, 400f, 1000)
+        touch(view, MotionEvent.ACTION_MOVE, 800f, 400f, 1200)
+        touch(view, MotionEvent.ACTION_MOVE, 800f, 1400f, 1400)
+        touch(view, MotionEvent.ACTION_MOVE, 200f, 1400f, 1600)
+        touch(view, MotionEvent.ACTION_UP, 200f, 400f, 1800)
+        val args = inputs.single()
+        assertEquals("swipe", args.getString("action"))
+        val path = args.getJSONArray("path")
+        assertEquals(5, path.length())
+        assertEquals(path.getJSONObject(0).toString(), path.getJSONObject(4).toString())
+        assertEquals(800, args.getInt("durationMs"))
+        view.clearFrame()
+    }
+
+    @Test
+    fun batchedMoveHistoryRetainsCornersInTheirOriginalOrder() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        touch(view, MotionEvent.ACTION_DOWN, 200f, 400f, 1000)
+        val move = MotionEvent.obtain(1000, 1200, MotionEvent.ACTION_MOVE, 800f, 400f, 0)
+        try {
+            move.addBatch(1400, 800f, 1400f, 1f, 1f, 0)
+            move.addBatch(1600, 200f, 1400f, 1f, 1f, 0)
+            view.onTouchEvent(move)
+        } finally { move.recycle() }
+        touch(view, MotionEvent.ACTION_UP, 200f, 400f, 1800)
+        val path = inputs.single().getJSONArray("path")
+        assertEquals(5, path.length())
+        assertEquals(576, path.getJSONObject(1).getInt("x"))
+        assertEquals(576, path.getJSONObject(2).getInt("x"))
+        assertEquals(143, path.getJSONObject(3).getInt("x"))
+        view.clearFrame()
+    }
+
+    @Test
+    fun denseClosedCurveKeepsShapeAndFitsThePathInputLimit() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        touch(view, MotionEvent.ACTION_DOWN, 800f, 1000f, 1000)
+        for (index in 1 until 600) {
+            val angle = index * 2 * Math.PI / 600
+            touch(view, MotionEvent.ACTION_MOVE, (500 + 300 * kotlin.math.cos(angle)).toFloat(),
+                (1000 + 600 * kotlin.math.sin(angle)).toFloat(), 1000L + index * 2)
+        }
+        touch(view, MotionEvent.ACTION_UP, 800f, 1000f, 2200)
+        val args = inputs.single()
+        assertEquals("swipe", args.getString("action"))
+        val path = io.github.mangi.eta.agent.device.SwipePath.parse(args)
+        assertTrue(path.size in 3..64)
+        assertEquals(path.first(), path.last())
+        assertTrue(path.any { it.x < 155 })
+        assertTrue(path.any { it.y < 220 })
+        assertTrue(path.any { it.y > 1050 })
+        view.clearFrame()
+    }
+
+    @Test
+    fun disablingAndReenablingTouchMidStrokeDoesNotReplayTheOldGesture() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        touch(view, MotionEvent.ACTION_DOWN, 200f, 400f, 1000)
+        touch(view, MotionEvent.ACTION_MOVE, 800f, 400f, 1200)
+        view.touchEnabled = false
+        view.touchEnabled = true
+        touch(view, MotionEvent.ACTION_UP, 800f, 1400f, 1400)
+        assertTrue(inputs.isEmpty())
         view.clearFrame()
     }
 
@@ -146,10 +236,30 @@ class VirtualScreenSurfaceViewTest {
         touch(view, MotionEvent.ACTION_DOWN, 750f, 400f, 1000)
         touch(view, MotionEvent.ACTION_UP, 750f, 1600f, 1500)
         assertEquals("swipe", inputs.single().getString("action"))
-        assertEquals(320, inputs.single().getInt("x1"))
-        assertEquals(199, inputs.single().getInt("y1"))
-        assertEquals(1280, inputs.single().getInt("x2"))
-        assertEquals(199, inputs.single().getInt("y2"))
+        val path = inputs.single().getJSONArray("path")
+        assertEquals(320, path.getJSONObject(0).getInt("x"))
+        assertEquals(199, path.getJSONObject(0).getInt("y"))
+        assertEquals(1280, path.getJSONObject(1).getInt("x"))
+        assertEquals(199, path.getJSONObject(1).getInt("y"))
+        view.clearFrame()
+    }
+
+    @Test
+    fun clockwisePreviewTransformsEveryCornerOfTheManualStroke() {
+        val inputs = mutableListOf<JSONObject>()
+        val view = view(inputs)
+        view.setFrame(Bitmap.createBitmap(1600, 800, Bitmap.Config.ARGB_8888),
+            VirtualDisplayInfo("session", "run", 3, 1600, 800, rotation = 1))
+        touch(view, MotionEvent.ACTION_DOWN, 750f, 400f, 1000)
+        touch(view, MotionEvent.ACTION_MOVE, 750f, 1600f, 1200)
+        touch(view, MotionEvent.ACTION_MOVE, 250f, 1600f, 1400)
+        touch(view, MotionEvent.ACTION_UP, 250f, 400f, 1600)
+        val path = inputs.single().getJSONArray("path")
+        assertEquals(4, path.length())
+        assertEquals(1280, path.getJSONObject(1).getInt("x"))
+        assertEquals(199, path.getJSONObject(1).getInt("y"))
+        assertEquals(1280, path.getJSONObject(2).getInt("x"))
+        assertEquals(599, path.getJSONObject(2).getInt("y"))
         view.clearFrame()
     }
 

@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SwipePathTest {
@@ -41,6 +42,56 @@ class SwipePathTest {
             assertThrows(IllegalArgumentException::class.java) {
                 SwipePath.parsePath(JSONArray().put(JSONObject().put("x", 1).put("y", 2)).put(malformed))
             }
+        }
+    }
+
+    @Test
+    fun compactKeepsEndpointsAndCornersWhenSampledPathExceedsLimit() {
+        val points = buildList {
+            repeat(40) { add(point(it, 0)) }
+            repeat(40) { add(point(39, it)) }
+            repeat(40) { add(point(39 - it, 39)) }
+        }
+        val compacted = SwipePath.compact(points, maxPoints = 8)
+        assertEquals(points.first(), compacted.first())
+        assertEquals(points.last(), compacted.last())
+        assertTrue(compacted.any { it == point(39, 0) })
+        assertTrue(compacted.any { it == point(39, 39) })
+        assertTrue(compacted.size <= 8)
+    }
+
+    @Test
+    fun compactRetainsCollinearReversalsAndClosedStrokes() {
+        val points = (0..100).map { point(it, 20) } + (99 downTo 0).map { point(it, 20) }
+        val compacted = SwipePath.compact(points, maxPoints = 8)
+        assertEquals(listOf(point(0, 20), point(100, 20), point(0, 20)), compacted)
+    }
+
+    @Test
+    fun compactRetainsBacktrackingInsideTheEndpointChord() {
+        val points = (0..100).map { point(it, 20) } +
+            (99 downTo 50).map { point(it, 20) } + (51..200).map { point(it, 20) }
+        assertEquals(listOf(point(0, 20), point(100, 20), point(50, 20), point(200, 20)),
+            SwipePath.compact(points, maxPoints = 8))
+    }
+
+    @Test
+    fun compactPreservesCircleShapeAndOrderWithManySamples() {
+        val points = (0..600).map { index ->
+            val angle = index * 2 * Math.PI / 600
+            point((500 + 400 * kotlin.math.cos(angle)).toInt(), (500 + 400 * kotlin.math.sin(angle)).toInt())
+        }
+        val compacted = SwipePath.compact(points)
+        assertEquals(points.first(), compacted.first())
+        assertEquals(points.last(), compacted.last())
+        assertTrue(compacted.size <= SwipePath.MAX_POINTS)
+        assertTrue(compacted.any { it.x < 110 })
+        assertTrue(compacted.any { it.y < 110 })
+        assertTrue(compacted.any { it.y > 890 })
+        var index = 0
+        compacted.forEach { point ->
+            while (index < points.size && points[index] != point) index++
+            assertTrue(index++ < points.size)
         }
     }
 

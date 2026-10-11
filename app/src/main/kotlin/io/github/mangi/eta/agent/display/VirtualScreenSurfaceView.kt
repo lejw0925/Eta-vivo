@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.widget.FrameLayout
 import android.widget.ImageView
+import io.github.mangi.eta.agent.device.SwipePath
 import io.github.mangi.eta.agent.overlay.GestureIndicatorHost
 import org.json.JSONObject
 import kotlin.math.hypot
@@ -21,8 +22,14 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
     private var lastGesture = 0L
     private var down: MotionEvent? = null
     private var downSession: String? = null
+    private val touchPath = ArrayList<SwipePath.Point>()
+    private var touchMoved = false
     var onInput: (String, JSONObject) -> Unit = { _, _ -> }
     var touchEnabled = true
+        set(value) {
+            if (!value) cancelTouch()
+            field = value
+        }
 
     init {
         addView(image, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -79,11 +86,14 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 cancelTouch()
-                if (viewport.toDisplay(event.x, event.y) == null) return false
+                val start = viewport.toDisplay(event.x, event.y) ?: return false
                 down = MotionEvent.obtain(event)
                 downSession = info?.sessionId
+                appendTouchPoint(start)
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
+
+            MotionEvent.ACTION_MOVE -> recordTouchPoints(event, viewport)
 
             MotionEvent.ACTION_UP -> {
                 val first = down ?: return true
@@ -91,13 +101,10 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
                 val start = viewport.toDisplay(first.x, first.y)
                 val end = viewport.toDisplay(event.x, event.y, clamp = true)
                 if (session != null && session == info?.sessionId && start != null && end != null) {
+                    recordTouchPoints(event, viewport)
                     val duration = (event.eventTime - first.eventTime).toInt().coerceIn(100, 3000)
-                    val moved = hypot(
-                        event.x - first.x,
-                        event.y - first.y
-                    ) > ViewConfiguration.get(context).scaledTouchSlop
-                    val args = if (moved) JSONObject().put("action", "swipe")
-                        .put("x1", start.x).put("y1", start.y).put("x2", end.x).put("y2", end.y)
+                    val args = if (touchMoved && touchPath.size >= 2) JSONObject().put("action", "swipe")
+                        .put("path", SwipePath.toJson(SwipePath.compact(touchPath)))
                         .put("durationMs", duration.coerceAtMost(2000))
                     else JSONObject().put(
                         "action",
@@ -144,10 +151,39 @@ internal class VirtualScreenSurfaceView(context: Context) : FrameLayout(context)
         VirtualScreenViewport.fit(width, height, it.width, it.height)
     }
 
+    private fun recordTouchPoints(event: MotionEvent, viewport: VirtualScreenViewport) {
+        if (down == null) return
+        for (index in 0 until event.historySize) {
+            recordTouchPoint(event.getHistoricalX(index), event.getHistoricalY(index), viewport)
+        }
+        recordTouchPoint(event.x, event.y, viewport)
+    }
+
+    private fun recordTouchPoint(x: Float, y: Float, viewport: VirtualScreenViewport) {
+        val first = down ?: return
+        if (!x.isFinite() || !y.isFinite()) return
+        if (hypot(x - first.x, y - first.y) > ViewConfiguration.get(context).scaledTouchSlop) touchMoved = true
+        viewport.toDisplay(x, y, clamp = true)?.let(::appendTouchPoint)
+    }
+
+    private fun appendTouchPoint(point: VirtualScreenViewport.Point) {
+        val next = SwipePath.Point(point.x, point.y)
+        if (touchPath.lastOrNull() != next) touchPath.add(next)
+        // Bound long or high-frequency strokes without losing their first/last points.
+        if (touchPath.size > SwipePath.MAX_POINTS * 8) {
+            val compacted = SwipePath.compact(touchPath, SwipePath.MAX_POINTS * 4)
+            touchPath.clear()
+            touchPath.addAll(compacted)
+        }
+    }
+
     private fun cancelTouch() {
         down?.recycle()
         down = null
         downSession = null
+        touchPath.clear()
+        touchMoved = false
+        parent?.requestDisallowInterceptTouchEvent(false)
     }
 
     override fun onDetachedFromWindow() {
